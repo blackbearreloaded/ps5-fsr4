@@ -66,6 +66,9 @@ def main():
     parser.add_argument("--run", action="store_true", help="Execute Windows WARP through WSL interop")
     parser.add_argument("--renderdoc", type=Path,
                         help="Optional pinned RenderDoc 1.46 x64 directory; records all four frames")
+    parser.add_argument("--hardware", action="store_true",
+                        help="Run on the host's largest hardware adapter instead of WARP, "
+                             "to measure legitimate implementation variance; never a reference")
     parser.add_argument("--render-size", type=int, nargs=2, metavar=("WIDTH", "HEIGHT"),
                         default=[128, 96])
     parser.add_argument("--output-size", type=int, nargs=2, metavar=("WIDTH", "HEIGHT"),
@@ -85,6 +88,8 @@ def main():
                     frames=args.frames, scenario=args.scenario)
     pinned_workload = workload == dict(render_size=[128, 96], output_size=[192, 144],
                                        frames=4, scenario="static")
+    if args.hardware and args.renderdoc:
+        parser.error("--hardware runs are variance measurements and are never captured")
     renderdoc = args.renderdoc.resolve() if args.renderdoc else None
     if renderdoc:
         for name, expected in RENDERDOC_HASHES.items():
@@ -124,11 +129,14 @@ def main():
                "-o", str(exe)]
     if renderdoc:
         command += ["-DFSR4_CAPTURE", "-I" + str(renderdoc)]
+    if args.hardware:
+        command.append("-DFSR4_HARDWARE_ADAPTER")
     subprocess.run(command, check=True)
     manifest = dict(executable_sha256=sha(exe), probe_source_sha256=PROBE_SHA,
                     provider_sha256=sha(args.provider),
                     reference_variant=("scalar-unpack" if sha(args.provider) == SCALAR_UNPACK_PROVIDER_SHA else "upstream-rc11"),
-                    backend="Windows WARP via WSL interop",
+                    backend=("Windows hardware adapter via WSL interop (variance only)" if args.hardware
+                             else "Windows WARP via WSL interop"),
                     compiler=subprocess.check_output(["clang-18", "--version"], text=True).splitlines()[0],
                     ps5_execution=False, graph_capture_complete=False, workload=workload,
                     runtime_sha256={p.name: sha(p) for p in runtime_files})

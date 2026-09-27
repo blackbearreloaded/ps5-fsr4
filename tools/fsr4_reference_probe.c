@@ -50,8 +50,29 @@ static HRESULT WINAPI create_warp_device(IUnknown *unused, D3D_FEATURE_LEVEL lev
     HRESULT (WINAPI *create_factory)(REFIID, void **) =
         (void *)GetProcAddress(dxgi, "CreateDXGIFactory1");
     HRESULT hr = create_factory ? create_factory(&IID_IDXGIFactory4, (void **)&factory) : E_NOINTERFACE;
+#ifdef FSR4_HARDWARE_ADAPTER
+    /* Variance measurement only: the largest non-software adapter replaces WARP. */
+    SIZE_T best = 0;
+    for (UINT i = 0; SUCCEEDED(hr); i++) {
+        IDXGIAdapter1 *candidate = NULL;
+        DXGI_ADAPTER_DESC1 desc;
+        if (FAILED(IDXGIFactory4_EnumAdapters1(factory, i, &candidate)))
+            break;
+        if (SUCCEEDED(IDXGIAdapter1_GetDesc1(candidate, &desc)) &&
+            !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) && desc.DedicatedVideoMemory > best) {
+            best = desc.DedicatedVideoMemory;
+            if (adapter) IUnknown_Release(adapter);
+            adapter = (IUnknown *)candidate;
+            candidate = NULL;
+        }
+        if (candidate) IDXGIAdapter1_Release(candidate);
+    }
+    if (SUCCEEDED(hr) && !adapter)
+        hr = DXGI_ERROR_NOT_FOUND;
+#else
     if (SUCCEEDED(hr))
         hr = IDXGIFactory4_EnumWarpAdapter(factory, &IID_IUnknown, (void **)&adapter);
+#endif
     if (SUCCEEDED(hr))
         hr = create_device(adapter, level, iid, device);
 #ifdef FSR4_CAPTURE
@@ -97,6 +118,8 @@ void mainCRTStartup(void)
     capture_api->SetCaptureFilePathTemplate(path);
     capture_api->MaskOverlayBits(0, 0);
 #endif
+#ifndef FSR4_HARDWARE_ADAPTER
     if (!LoadLibraryW(L"d3d10warp.dll")) ExitProcess(31);
+#endif
     bc250_mainCRTStartup();
 }
