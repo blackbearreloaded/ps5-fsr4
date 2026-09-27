@@ -48,6 +48,9 @@ class CaptureContinuity(unittest.TestCase):
         graph = copy.deepcopy(baseline)
         graph["dispatches"] = graph["dispatches"][:28]
         self.assertEqual(select_dispatches(graph, 0, 1), list(range(28)))
+        self.assertEqual(select_dispatches(graph, 0, 1, start_pass=1), list(range(1, 28)))
+        with self.assertRaisesRegex(ValueError, "Invalid start pass"):
+            select_dispatches(graph, 0, 1, start_pass=28)
         with self.assertRaisesRegex(ValueError, "Selected frames exceed"):
             select_dispatches(graph, 0, 2)
         with self.assertRaisesRegex(ValueError, "not a captured image stage"):

@@ -74,17 +74,19 @@ def validate_resource_continuity(dispatches):
                 state[resource] = binding["at_event"]
 
 
-def select_dispatches(graph, start_frame, frames, isolated=None):
+def select_dispatches(graph, start_frame, frames, isolated=None, start_pass=0):
     count = len(graph["dispatches"])
+    if not 0 <= start_pass < 28:
+        raise ValueError("Invalid start pass")
     if isolated is not None:
-        if frames != 1 or start_frame != 0:
-            raise ValueError("--frames/--start-frame cannot be combined with an isolated --dispatch")
+        if frames != 1 or start_frame != 0 or start_pass != 0:
+            raise ValueError("--frames/--start-frame/--start-pass cannot be combined with an isolated --dispatch")
         if isolated < 0 or isolated >= count or isolated % 28 not in (0, 1, 27):
             raise ValueError("Isolated dispatch is not a captured image stage")
         return [isolated]
     if start_frame < 0 or frames < 1 or (start_frame + frames) * 28 > count:
         raise ValueError("Selected frames exceed the capture")
-    return list(range(28 * start_frame, 28 * (start_frame + frames)))
+    return list(range(28 * start_frame + start_pass, 28 * (start_frame + frames)))
 
 
 def validate_shader_sequence(graph, baseline):
@@ -103,19 +105,20 @@ def main():
     parser.add_argument("--dispatch", type=int, help="An isolated image stage from any captured frame; default is the complete first frame")
     parser.add_argument("--frames", type=int, choices=range(1, 601), default=1, help="Connected captured frames, retaining history")
     parser.add_argument("--start-frame", type=int, choices=range(600), default=0, help="First captured frame; initializes resources from its reference input state")
+    parser.add_argument("--start-pass", type=int, choices=range(28), default=0, help="First pass of the selected frame; initialize skipped outputs from the reference")
     parser.add_argument("--fp32-fma", choices=("explicit", "compiler-default"), default="explicit",
                         help="Select the experimental explicit FP32 fusion or the prior compiler behavior")
     parser.add_argument("--out", type=Path, default=ROOT / "build/fsr4-frame-app")
     parser.add_argument("--use-staged-sdk", action="store_true")
     args = parser.parse_args()
-    if args.dispatch is not None and (args.frames != 1 or args.start_frame != 0):
-        parser.error("--frames/--start-frame cannot be combined with an isolated --dispatch")
+    if args.dispatch is not None and (args.frames != 1 or args.start_frame != 0 or args.start_pass != 0):
+        parser.error("--frames/--start-frame/--start-pass cannot be combined with an isolated --dispatch")
     capture, original, out = args.capture.resolve(), args.original.resolve(), args.out.resolve()
     graph, old = load_capture(capture, args.capture_sha256), load_capture(original, ORIGINAL_GRAPH)
     baseline = load_capture(ROOT / "build/reference-runtime/capture-export-scalar-unpack", CORRECTED_GRAPH)
     validate_shader_sequence(graph, baseline)
     try:
-        indices = select_dispatches(graph, args.start_frame, args.frames, args.dispatch)
+        indices = select_dispatches(graph, args.start_frame, args.frames, args.dispatch, args.start_pass)
     except ValueError as error:
         parser.error(str(error))
     _, sdk, _, _, _ = native_inputs()
@@ -235,7 +238,8 @@ def main():
                     complete_fsr4=False, hardware_tested=False,
                     frames=args.frames if args.dispatch is None else 0,
                     start_frame=args.start_frame if args.dispatch is None else args.dispatch // 28,
-                    full_first_frame=args.dispatch is None and args.frames == 1 and args.start_frame == 0,
+                    start_pass=args.start_pass if args.dispatch is None else args.dispatch % 28,
+                    full_first_frame=args.dispatch is None and args.frames == 1 and args.start_frame == 0 and args.start_pass == 0,
                     sdk_archive_sha256=sha((DIST_SDK / "lib/libps5vk.a").read_bytes()),
                     compiler_archive_sha256=sha((DIST_SDK / "lib/libpsbc.a").read_bytes()),
                     resources=[{k:v for k,v in x.items() if k not in ("initial", "expected")} for x in resources],
