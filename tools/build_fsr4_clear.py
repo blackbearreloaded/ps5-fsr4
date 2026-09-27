@@ -88,22 +88,25 @@ def buffer_chain(graph):
             raise ValueError("Invalid dispatch dimensions")
     return records
 
-def build_native_app(out, source_file, title_name):
+def build_native_app(out, source_file, title_name, extra_sources=(), include_dirs=()):
     """Use the same native template, heap and public SDK for both witnesses."""
     foundation, sdk, compiler, builder, gears = native_inputs()
     env = dict(os.environ, PS5_PAYLOAD_SDK=str(sdk))
     package = out / "PPSA88900"
     for folder in ("sce_sys", "sce_module"):
         (package / folder).mkdir(parents=True, exist_ok=True)
-    obj, dep, crt = out / "main.o", out / "main.d", out / "crt.o"
-    subprocess.run([str(compiler), "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
-                    "-MD", "-MF", str(dep), "-I" + str(DIST_SDK / "include"), "-I" + str(out),
-                    "-c", str(source_file), "-o", str(obj)],
-                   env=env, check=True)
-    # Only public SDK and generated fixture headers are used by this consumer.
-    deps = dep.read_text()
-    if str(ROOT / "src/ps5vk_") in deps or str(ROOT / "native") + "/" in deps:
-        raise ValueError("Private implementation header in clear consumer")
+    objects, crt = [], out / "crt.o"
+    includes = ["-I" + str(DIST_SDK / "include"), "-I" + str(out), *("-I" + str(x) for x in include_dirs)]
+    for n, source in enumerate((source_file, *extra_sources)):
+        obj, dep = out / ("main.o" if n == 0 else f"extra{n}.o"), out / ("main.d" if n == 0 else f"extra{n}.d")
+        subprocess.run([str(compiler), "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                        "-MD", "-MF", str(dep), *includes, "-c", str(source), "-o", str(obj)],
+                       env=env, check=True)
+        # Only public SDK, SDK-level FSR4 runtime and generated headers are used by this consumer.
+        deps = dep.read_text()
+        if str(ROOT / "src/ps5vk_") in deps or str(ROOT / "native") + "/" in deps:
+            raise ValueError("Private implementation header in clear consumer")
+        objects.append(obj)
     subprocess.run([str(sdk / "bin/prospero-clang++"), "-std=c++20", "-O2",
                     "-fno-exceptions", "-fno-rtti", "-c",
                     str(foundation / "tooling/native/app_crt.cpp"), "-o", str(crt)], env=env, check=True)
@@ -115,7 +118,7 @@ def build_native_app(out, source_file, title_name):
     subprocess.run([str(sdk / "bin/prospero-lld"), "-L" + str(sdk / "target/lib"),
                     "-T", str(DIST_SDK / "lib/ps5-pie.ld"), "--eh-frame-hdr",
                     "--version-script", str(DIST_SDK / "lib/app-symbols.map"),
-                    "-e", "_start", "-o", str(pie), str(crt), str(obj), str(heap),
+                    "-e", "_start", "-o", str(pie), str(crt), *map(str, objects), str(heap),
                     *["--wrap=" + name for name in ("malloc", "calloc", "realloc", "free",
                       "posix_memalign", "memalign", "aligned_alloc", "malloc_usable_size")],
                     str(DIST_SDK / "lib/libps5vk.a"), str(DIST_SDK / "lib/libpsbc.a"),
