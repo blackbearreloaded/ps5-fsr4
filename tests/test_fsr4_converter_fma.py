@@ -23,6 +23,8 @@ void main(uint3 tid : SV_DispatchThreadID) {
     precise float value = v.x * v.y + v.z;
 #elif MODE == 2
     half value = (half)v.x * (half)v.y + (half)v.z;
+#elif MODE == 4
+    float value = (float)(half)v.x;
 #else
     precise float product = v.x * v.y;
     float value = product + v.z;
@@ -40,7 +42,7 @@ def main():
         out = Path(temp)
         shader = out / "contract.hlsl"
         shader.write_text(SOURCE)
-        for mode in range(4):
+        for mode in range(5):
             dxil, spv = out / f"{mode}.dxil", out / f"{mode}.spv"
             subprocess.run([str(dxc), "-T", "cs_6_6", "-E", "main",
                             "-enable-16bit-types", "-D", f"MODE={mode}",
@@ -51,6 +53,22 @@ def main():
                 subprocess.run([str(tools / "spirv-val"), "--target-env",
                                 "vulkan1.3", str(spv)], check=True)
                 assembly = subprocess.check_output([str(tools / "spirv-dis"), str(spv)], text=True)
+                if mode == 4:
+                    # The round-trip shortcut must use the explicit scalar RTZ
+                    # input, not quantize the unmasked FP32 input with RTE.
+                    assert "OpQuantizeToF16" not in assembly, assembly
+                    quant = re.findall(r"%\w+ = OpCopyObject %float (%\w+)", assembly)
+                    assert len(quant) == 1, assembly
+                    definitions = dict(re.findall(r"(%\w+) = ([^\n]+)", assembly))
+                    pending, seen = quant[:], set()
+                    while pending:
+                        value = pending.pop()
+                        if value in seen:
+                            continue
+                        seen.add(value)
+                        pending.extend(re.findall(r"%\w+", definitions.get(value, "")))
+                    assert any("OpShiftLeftLogical" in definitions.get(value, "")
+                               for value in seen), assembly
                 fused = re.findall(r"(%\w+) = OpExtInst %\w+ %\w+ Fma ", assembly)
                 if mode == 0 and policy == "1":
                     assert len(fused) == 1, assembly
@@ -61,7 +79,7 @@ def main():
                                  env=dict(os.environ, PS5_FSR4_FP32_FMA="typo"),
                                  capture_output=True, text=True)
         assert invalid.returncode == 2 and "must be 0 or 1" in invalid.stderr
-    print("PASS: explicit/default FP32 policies; precise and FP16 boundaries; invalid policy rejected")
+    print("PASS: explicit/default FP32 policies; precise and FP16 boundaries; RTZ round trips; invalid policy rejected")
 
 
 if __name__ == "__main__":
