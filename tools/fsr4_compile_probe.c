@@ -12,7 +12,7 @@ int main(int argc, char **argv)
 {
     if (argc < 2 || argc > 2 + PSBC_MAX_DESCRIPTOR_BINDINGS) {
         fprintf(stderr, "usage: fsr4_compile_probe shader.spv [set:binding:type:count ...]\n"
-                        "types: buffer, sampled-image, storage-image, sampler\n");
+                        "types: buffer, uniform-buffer, sampled-image, storage-image, sampler\n");
         return 2;
     }
     FILE *file = fopen(argv[1], "rb");
@@ -34,6 +34,7 @@ int main(int argc, char **argv)
         .stage = PSBC_STAGE_COMPUTE,
         .entrypoint = "main",
         .optimise = true,
+        .compute_buffer_spills = true,
         .address32_hi = 2,
         .robust_buffer_access2 = true,
         .static_descriptor_use = true,
@@ -70,6 +71,9 @@ int main(int argc, char **argv)
         if (!strcmp(type, "buffer")) {
             descriptor_type = PSBC_DESCRIPTOR_STORAGE_BUFFER;
             vulkan_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; stride = 16;
+        } else if (!strcmp(type, "uniform-buffer")) {
+            descriptor_type = PSBC_DESCRIPTOR_UNIFORM_BUFFER;
+            vulkan_type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; stride = 16;
         } else if (!strcmp(type, "sampled-image")) {
             descriptor_type = PSBC_DESCRIPTOR_SAMPLED_IMAGE;
             vulkan_type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; stride = 32;
@@ -109,7 +113,9 @@ int main(int argc, char **argv)
     uint32_t *code = NULL;
     if (argc > 2) {
         struct VkPipelineLayout_T layout = {
-            .set_count = PSBC_MAX_DESCRIPTOR_SETS, .push_constant_size = 16,
+            .set_count = PSBC_MAX_DESCRIPTOR_SETS,
+            .push_constant_size = output.metadata.push_constants_valid ?
+                                  output.metadata.push_constant_size : 0,
         };
         for (unsigned set = 0; set < PSBC_MAX_DESCRIPTOR_SETS; ++set) {
             uint32_t prefix = 0;
@@ -125,7 +131,14 @@ int main(int argc, char **argv)
             }
             layout.sets[set].count = prefix;
         }
-        for (unsigned i = 0; i < 4; ++i)
+        if (layout.push_constant_size > sizeof(layout.push_constant_stages) /
+                                        sizeof(layout.push_constant_stages[0]) * 4) {
+            psbc_free_output(&output);
+            psbc_shutdown();
+            free(words);
+            return 2;
+        }
+        for (unsigned i = 0; i < (layout.push_constant_size + 3) / 4; ++i)
             layout.push_constant_stages[i] = VK_SHADER_STAGE_COMPUTE_BIT;
         const uint32_t features = PS5VK_FEATURE_STORAGE_BUFFER_8BIT |
             PS5VK_FEATURE_STORAGE_BUFFER_16BIT | PS5VK_FEATURE_SHADER_INT8_COMPUTE |
@@ -148,9 +161,20 @@ int main(int argc, char **argv)
                "\"adapter_descriptors\":%u,\"adapter_push_bytes\":%u}\n",
                adapter_result, program.code_words * sizeof(uint32_t),
                program.descriptor_count, program.push_constant_size);
+    const char *dump_path = getenv("PS5VK_PROBE_CODE_OUT");
+    int dump_ok = 1;
+    if (dump_path && result == PSBC_RESULT_OK) {
+        FILE *dump = fopen(dump_path, "wb");
+        if (!dump) { perror(dump_path); dump_ok = 0; }
+        else {
+            dump_ok = fwrite(output.machine_code, 1, output.machine_code_size, dump) ==
+                      output.machine_code_size;
+            if (fclose(dump)) dump_ok = 0;
+        }
+    }
     free(code);
     psbc_free_output(&output);
     psbc_shutdown();
     free(words);
-    return result == PSBC_RESULT_OK && adapter_result == VK_SUCCESS ? 0 : 1;
+    return dump_ok && result == PSBC_RESULT_OK && adapter_result == VK_SUCCESS ? 0 : 1;
 }

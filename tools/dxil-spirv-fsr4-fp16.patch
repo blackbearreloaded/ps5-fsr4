@@ -1,0 +1,228 @@
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+index ebb1be9..bca07c1 100644
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6015,6 +6015,51 @@ bool Converter::Impl::support_native_fp16_operations() const
+ 	return execution_mode_meta.native_16bit_operations || options.min_precision_prefer_native_16bit;
+ }
+ 
++#ifdef PS5_FSR4_REFERENCE_FP16
++// A texture-result convert/extend pair can retain FP32 precision on Vulkan.
++// Quantize normal values explicitly; round the subnormal interval in FP32
++// because OpQuantizeToF16 is permitted to flush FP16 subnormals to zero.
++static spv::Id fsr4_rte_fp16_input(Converter::Impl &impl, spv::Id input, unsigned components)
++{
++    auto &b = impl.builder();
++    auto type = [&](spv::Id scalar) {
++        return components == 1 ? scalar : b.makeVectorType(scalar, components);
++    };
++    auto constant = [&](spv::Id scalar, spv::Id scalar_type) {
++        return components == 1 ? scalar :
++            b.makeCompositeConstant(type(scalar_type), Vector<spv::Id>(components, scalar));
++    };
++    auto u32 = type(b.makeUintType(32));
++    auto f32 = type(b.makeFloatType(32));
++    auto boolean = type(b.makeBoolType());
++    auto u = [&](uint32_t value) { return constant(b.makeUintConstant(value), b.makeUintType(32)); };
++    auto f = [&](float value) { return constant(b.makeFloatConstant(value), b.makeFloatType(32)); };
++    auto op = [&](spv::Op code, spv::Id result_type, std::initializer_list<spv::Id> ids) {
++        auto *value = impl.allocate(code, result_type);
++        for (auto id : ids) value->add_id(id);
++        impl.add(value);
++        return value->id;
++    };
++    auto bits = op(spv::OpBitcast, u32, {input});
++    auto magnitude = op(spv::OpBitwiseAnd, u32, {bits, u(0x7fffffffu)});
++    auto small = op(spv::OpULessThan, boolean, {magnitude, u(0x38800000u)});
++    auto scaled = op(spv::OpFMul, f32, {op(spv::OpBitcast, f32, {magnitude}), f(16777216.0f)});
++    if (!impl.glsl_std450_ext)
++        impl.glsl_std450_ext = b.import("GLSL.std.450");
++    auto *round = impl.allocate(spv::OpExtInst, f32);
++    round->add_id(impl.glsl_std450_ext);
++    round->add_literal(GLSLstd450RoundEven);
++    round->add_id(scaled);
++    impl.add(round);
++    auto subnormal = op(spv::OpFMul, f32, {round->id, f(0x1p-24f)});
++    auto signed_bits = op(spv::OpBitwiseOr, u32, {
++        op(spv::OpBitcast, u32, {subnormal}),
++        op(spv::OpBitwiseAnd, u32, {bits, u(0x80000000u)})});
++    auto quantized = op(spv::OpQuantizeToF16, f32, {input});
++    return op(spv::OpSelect, f32, {small, op(spv::OpBitcast, f32, {signed_bits}), quantized});
++}
++#endif
++
+ spv::Id Converter::Impl::build_value_cast(spv::Id value_id,
+                                           DXIL::ComponentType input_type,
+                                           DXIL::ComponentType output_type,
+@@ -6064,6 +6109,10 @@ spv::Id Converter::Impl::build_value_cast(spv::Id value_id,
+ 		}
+ 	}
+ 
++#ifdef PS5_FSR4_REFERENCE_FP16
++    if (input_type == DXIL::ComponentType::F32 && output_type == DXIL::ComponentType::F16)
++        value_id = fsr4_rte_fp16_input(*this, value_id, components);
++#endif
+ 	Operation *op = allocate(opcode, get_type_id(output_type, 1, components));
+ 	op->add_id(value_id);
+ 	add(op);
+diff --git a/opcodes/dxil/dxil_arithmetic.cpp b/opcodes/dxil/dxil_arithmetic.cpp
+index fe1ad4c..210497e 100644
+--- a/opcodes/dxil/dxil_arithmetic.cpp
++++ b/opcodes/dxil/dxil_arithmetic.cpp
+@@ -1236,7 +1236,20 @@ bool emit_dot2_add_half_instruction(Converter::Impl &impl, const llvm::CallInst
+ 		return true;
+ 	}
+ 
++#ifdef PS5_FSR4_REFERENCE_FP16
++    // The WARP reference multiplies the exact half inputs in FP32. Select
++    // that permitted dot2add precision explicitly instead of half products.
++    for (auto *value : {&a, &b})
++    {
++        auto *extend = impl.allocate(spv::OpFConvert, builder.makeVectorType(float_type_id, 2));
++        extend->add_id(*value);
++        impl.add(extend);
++        *value = extend->id;
++    }
++    auto *dot_op = impl.allocate(spv::OpFMul, builder.makeVectorType(float_type_id, 2));
++#else
+ 	auto *dot_op = impl.allocate(spv::OpFMul, builder.makeVectorType(half_type_id, 2));
++#endif
+ 	dot_op->add_id(a);
+ 	dot_op->add_id(b);
+ 	impl.add(dot_op);
+@@ -1244,6 +1257,7 @@ bool emit_dot2_add_half_instruction(Converter::Impl &impl, const llvm::CallInst
+ 		add_nocontract_decoration(impl, dot_op->id);
+ 
+ 	spv::Id expanded_input = dot_op->id;
++#ifndef PS5_FSR4_REFERENCE_FP16
+ 	if (impl.support_native_fp16_operations())
+ 	{
+ 		auto *extend_op = impl.allocate(spv::OpFConvert, builder.makeVectorType(float_type_id, 2));
+@@ -1252,6 +1266,8 @@ bool emit_dot2_add_half_instruction(Converter::Impl &impl, const llvm::CallInst
+ 		expanded_input = extend_op->id;
+ 	}
+ 
++#endif
++
+ 	spv::Id components[2];
+ 	for (unsigned i = 0; i < 2; i++)
+ 	{
+diff --git a/opcodes/opcodes_llvm_builtins.cpp b/opcodes/opcodes_llvm_builtins.cpp
+index 4a7f235..2a36608 100644
+--- a/opcodes/opcodes_llvm_builtins.cpp
++++ b/opcodes/opcodes_llvm_builtins.cpp
+@@ -473,9 +473,51 @@ static spv::Id emit_integer_division_instruction(Converter::Impl &impl, const In
+ 	return call->id;
+ }
+ 
++#ifdef PS5_FSR4_REFERENCE_FP16
++// The captured reference contracts FP32 sums in operand order. Make that
++// choice explicit instead of letting each Vulkan compiler select a different
++// multiply to fuse. Keep precise operations and FP16 arithmetic unchanged.
++static spv::Id fsr4_contract_fp32_add(Converter::Impl &impl, const llvm::BinaryOperator *instruction)
++{
++    if (impl.options.force_precise || !instruction->isFast() ||
++        instruction->getOpcode() != llvm::Instruction::FAdd ||
++        instruction->getType()->getTypeID() != llvm::Type::TypeID::FloatTyID)
++        return 0;
++
++    for (unsigned side = 0; side < 2; side++)
++    {
++        const auto *mul = llvm::dyn_cast<llvm::BinaryOperator>(instruction->getOperand(side));
++        if (!mul || mul->getOpcode() != llvm::Instruction::FMul || !mul->isFast())
++            continue;
++
++        if (!impl.glsl_std450_ext)
++            impl.glsl_std450_ext = impl.builder().import("GLSL.std.450");
++        auto *op = impl.allocate(spv::OpExtInst, instruction);
++        op->add_id(impl.glsl_std450_ext);
++        op->add_literal(GLSLstd450Fma);
++        op->add_id(impl.get_id_for_value(mul->getOperand(0)));
++        op->add_id(impl.get_id_for_value(mul->getOperand(1)));
++        op->add_id(impl.get_id_for_value(instruction->getOperand(1 - side)));
++        impl.add(op);
++        add_nocontract_decoration(impl, op->id);
++        return op->id;
++    }
++    return 0;
++}
++
++static spv::Id fsr4_contract_fp32_add(Converter::Impl &, const llvm::ConstantExpr *)
++{
++    return 0;
++}
++#endif
++
+ template <typename InstructionType>
+ static spv::Id emit_binary_instruction_impl(Converter::Impl &impl, const InstructionType *instruction)
+ {
++#ifdef PS5_FSR4_REFERENCE_FP16
++    if (auto id = fsr4_contract_fp32_add(impl, instruction))
++        return id;
++#endif
+ 	bool signed_input = false;
+ 	bool is_width_sensitive = false;
+ 	bool is_precision_sensitive = false;
+@@ -1213,6 +1255,45 @@ static spv::Id emit_special_non_native_packing_bitcast(Converter::Impl &, const
+ 	return 0;
+ }
+ 
++#ifdef PS5_FSR4_REFERENCE_FP16
++// Match the captured D3D12 reference's scalar FP32 -> FP16 RTZ conversion.
++// Mask in FP32 before conversion: a convert/extend/compare correction can be
++// folded away by Vulkan drivers. Every finite result below is exactly FP16
++// representable, including subnormals, signed zero and overflow saturation.
++static spv::Id fsr4_rtz_fp16_input(Converter::Impl &impl, spv::Id input)
++{
++    auto &b = impl.builder();
++    auto u32 = b.makeUintType(32);
++    auto f32 = b.makeFloatType(32);
++    auto boolean = b.makeBoolType();
++    auto c = [&](uint32_t value) { return b.makeUintConstant(value); };
++    auto op = [&](spv::Op code, spv::Id type, std::initializer_list<spv::Id> ids) {
++        auto *value = impl.allocate(code, type);
++        for (auto id : ids) value->add_id(id);
++        impl.add(value);
++        return value->id;
++    };
++    auto bits = op(spv::OpBitcast, u32, {input});
++    auto sign = op(spv::OpBitwiseAnd, u32, {bits, c(0x80000000u)});
++    auto exponent = op(spv::OpBitwiseAnd, u32,
++        {op(spv::OpShiftRightLogical, u32, {bits, c(23)}), c(255)});
++    auto subnormal = op(spv::OpULessThan, boolean, {exponent, c(113)});
++    auto shift = op(spv::OpBitwiseAnd, u32,
++        {op(spv::OpISub, u32, {c(126), exponent}), c(31)});
++    shift = op(spv::OpSelect, u32, {subnormal, shift, c(13)});
++    auto mask = op(spv::OpShiftLeftLogical, u32, {c(0xffffffffu), shift});
++    auto truncated = op(spv::OpBitwiseAnd, u32, {bits, mask});
++    auto tiny = op(spv::OpULessThan, boolean, {exponent, c(103)});
++    truncated = op(spv::OpSelect, u32, {tiny, sign, truncated});
++    auto overflow = op(spv::OpUGreaterThan, boolean, {exponent, c(142)});
++    auto largest = op(spv::OpBitwiseOr, u32, {sign, c(0x477fe000u)});
++    truncated = op(spv::OpSelect, u32, {overflow, largest, truncated});
++    auto special = op(spv::OpIEqual, boolean, {exponent, c(255)});
++    truncated = op(spv::OpSelect, u32, {special, bits, truncated});
++    return op(spv::OpBitcast, f32, {truncated});
++}
++#endif
++
+ template <typename InstructionType>
+ static spv::Id emit_cast_instruction_impl(Converter::Impl &impl, const InstructionType *instruction)
+ {
+@@ -1444,7 +1525,15 @@ static spv::Id emit_cast_instruction_impl(Converter::Impl &impl, const Instructi
+ 		else
+ 			op = impl.allocate(opcode, instruction);
+ 
+-		op->add_id(build_naturally_extended_value(impl, instruction->getOperand(0), signed_input));
++        auto input = build_naturally_extended_value(impl, instruction->getOperand(0), signed_input);
++#ifdef PS5_FSR4_REFERENCE_FP16
++        if (instruction->getOpcode() == llvm::Instruction::CastOps::FPTrunc &&
++            instruction->getType()->getTypeID() == llvm::Type::TypeID::HalfTyID &&
++            instruction->getOperand(0)->getType()->getTypeID() == llvm::Type::TypeID::FloatTyID &&
++            impl.support_native_fp16_operations())
++            input = fsr4_rtz_fp16_input(impl, input);
++#endif
++        op->add_id(input);
+ 		impl.add(op);
+ 		if (can_relax_precision)
+ 			impl.decorate_relaxed_precision(instruction->getType(), op->id, false);
