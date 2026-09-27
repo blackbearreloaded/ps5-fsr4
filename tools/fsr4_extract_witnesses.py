@@ -95,7 +95,7 @@ def witnesses(entries):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capsule_dir", type=Path)
-    parser.add_argument("--output", type=Path, default=Path("build/fsr4-rc9"))
+    parser.add_argument("--output", type=Path, default=Path("build/fsr4-rc9-proof"))
     parser.add_argument("--all", action="store_true",
                         help="export all verified original/target shader pairs")
     args = parser.parse_args()
@@ -113,7 +113,9 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     exported = []
     for index, entry in selected:
-        kinds = ("original", "target") if args.all else ("target",)
+        kinds = ("original", "target") if args.all else (
+            "original" if entry["entry"] == PREFIX + "pass9" else "target",
+        )
         for kind in kinds:
             digest = entry[f"{kind}_spirv_sha256"]
             filename = f"{entry['entry'].removeprefix(PREFIX)}-{index:02d}-{kind}-{digest[:12]}.spv"
