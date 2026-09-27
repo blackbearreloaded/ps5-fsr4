@@ -1,6 +1,6 @@
 # Vulkan foundation for PS5 FSR4
 
-Source review: 2026-09-26. Recommendation: fork **mpereiraesaa/ps5-vulkan** as a separate driver dependency and keep **ps5-fsr4** as the reusable upscaler SDK. This is a source-based selection, conditional on the compiler and hardware gates below; neither driver has demonstrated FSR4 execution.
+Source review: 2026-09-26. Selected foundation: **mpereiraesaa/ps5-vulkan**, now imported with its complete history at the root of **ps5-fsr4** as an independent working copy. The initial separate-driver-repository proposal was superseded by that import decision. The technical selection remains conditional on the compiler and hardware gates below; neither driver has demonstrated FSR4 execution.
 
 This review updates the initial OpenGL-first recommendation after the two Vulkan projects were supplied. OpenGL remains the requested example renderer. The Vulkan driver and OpenGL renderer do not currently have a proven shared-resource interface.
 
@@ -8,14 +8,14 @@ This review updates the initial OpenGL-first recommendation after the two Vulkan
 
 | Project | Commit |
 | --- | --- |
-| ps5-fsr4 | `bd84c259ee4a4e2c3d9e5409306cfef6e7da4e75` |
+| ps5-fsr4 original template (preserved in history) | `bd84c259ee4a4e2c3d9e5409306cfef6e7da4e75` |
 | BC250 FSR4 fork, branch v4 | `528f13b17e48bfba5b153f17ec4ebdfb3afa5bcb` |
 | ps5-opengl | `122aa899f9255e37d776b2a5317c86e5e9679907` |
 | mihawk-99/PS5_Vulkan | `3a6f00df0c1cc35c6514290b6c4949769fce0b6a` |
 | mpereiraesaa/ps5-vulkan | `10a76510a6b1e48061b5057f352cbbd6d78549fb` |
 | AMD FidelityFX SDK 2.3.0 | `60f4ea81909200d8542eca14dccb2628b763a9a3` |
 
-All five project repositories were cloned using WSL Git. Selected AMD documentation, headers and a complete, non-truncated Git tree listing were fetched through WSL. The review traced relevant compiler, resource, compute, synchronization, packaging and example paths; it did not run either Vulkan driver on a console.
+All five project repositories were cloned using WSL Git. The reviewed mpereiraesaa revision has since been imported into the destination, preserving all 274 upstream commits. Selected AMD documentation, headers and a complete, non-truncated Git tree listing were fetched through WSL. The review traced relevant compiler, resource, compute, synchronization, packaging and example paths; it did not run either Vulkan driver on a console.
 
 ## Why mpereiraesaa is the better FSR foundation
 
@@ -63,7 +63,7 @@ This is why BDA matters, but also why BDA alone is insufficient. The capture inc
 
 Machine-readable results: [source audit](SOURCE_AUDIT.json).
 
-## Work needed in the recommended fork
+## Work needed in the imported Vulkan foundation
 
 1. **Make the native build public and reproducible.** Accept explicit paths to the public payload SDK, native template and public graphics support. Replace the private logging client with a small public logging boundary or include it only if its source becomes publicly available under suitable terms. Native build requests must fail if they would otherwise produce only host/mock archives.
 2. **Choose a bounded shader ABI.** Attempt the captured modules against the pinned compiler, then determine whether fixed descriptor arrays and direct bindings can replace translator-generated runtime arrays. Implement general descriptor indexing only if the selected shaders actually need it.
@@ -77,7 +77,7 @@ Mihawk remains valuable as a reference for native timestamps, image descriptors,
 
 ## Decision gates
 
-Adopt mpereiraesaa provisionally, then require:
+The source import selects mpereiraesaa provisionally. Before calling the FSR path viable, require:
 
 - A clean public-source native build and a tiny existing compute test on the target PS5.
 - Successful compilation and correct GPU readback for one real preparation pass, one demanding inference pass and one output pass.
