@@ -85,9 +85,11 @@ int main(void) {
                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
 #if PS5VK_FSR4_STORAGE_DIAGNOSTIC
     assert(ps5vk_storage_image_info(&image));
-    image.extent.width=241;
+    image.extent.width=1920; image.extent.height=1080;
+    assert(ps5vk_storage_image_info(&image));
+    image.extent.width=1921;
     assert(!ps5vk_storage_image_info(&image));
-    image.extent.width=240; image.extent.height=145;
+    image.extent.width=1920; image.extent.height=1081;
     assert(!ps5vk_storage_image_info(&image));
 #else
     assert(!ps5vk_storage_image_info(&image));
