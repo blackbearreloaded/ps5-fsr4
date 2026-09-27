@@ -101,7 +101,8 @@ def build_native_app(out, source_file, title_name):
                     "-c", str(source_file), "-o", str(obj)],
                    env=env, check=True)
     # Only public SDK and generated fixture headers are used by this consumer.
-    if "src/ps5vk_" in dep.read_text() or "native/" in dep.read_text():
+    deps = dep.read_text()
+    if str(ROOT / "src/ps5vk_") in deps or str(ROOT / "native") + "/" in deps:
         raise ValueError("Private implementation header in clear consumer")
     subprocess.run([str(sdk / "bin/prospero-clang++"), "-std=c++20", "-O2",
                     "-fno-exceptions", "-fno-rtti", "-c",
@@ -137,7 +138,9 @@ def build_native_app(out, source_file, title_name):
     param["localizedParameters"]["en-US"]["titleName"] = title_name
     (package / "sce_sys/param.json").write_text(json.dumps(param, indent=2) + "\n")
     shutil.copyfile(foundation / "runtime/libc.prx", package / "sce_module/libc.prx")
-    shutil.copyfile(foundation / "sce_sys/icon0.png", package / "sce_sys/icon0.png")
+    # The shell refuses to launch PPSA88900 (0x80940033) without the launch assets.
+    for name in ("icon0.png", "pic0.dds", "pic1.dds", "snd0.at9"):
+        shutil.copyfile(foundation / "sce_sys" / name, package / "sce_sys" / name)
 
 
 def main():
