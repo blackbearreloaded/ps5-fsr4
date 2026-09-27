@@ -61,7 +61,7 @@ These are module declarations and capsule selection requirements, not proof that
 
 This is why BDA matters, but also why BDA alone is insufficient. The capture includes vkd3d descriptor conventions. A native Vulkan SDK still needs a correct binding map, constants, weights, resource layouts and dispatch schedule. FSR's model itself does not inherently require the whole vkd3d descriptor system.
 
-Machine-readable results: [source audit](SOURCE_AUDIT.json).
+Keep source-audit output local.
 
 ## Work needed in the imported Vulkan foundation
 
