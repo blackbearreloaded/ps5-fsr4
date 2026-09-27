@@ -2,7 +2,12 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Native captured FSR4 image stages and connected first-frame witness.
  */
+#ifdef FSR4_HOST
+/* Host replay of the identical fixture on any Vulkan 1.3 driver (e.g. lavapipe). */
+#include <vulkan/vulkan.h>
+#else
 #include <ps5vk/ps5vk.h>
+#endif
 #include <stdint.h>
 #include <stdarg.h>
 #include <errno.h>
@@ -12,7 +17,31 @@
 #include <unistd.h>
 #include "fsr4_frame_fixture.h"
 static FILE *log_file;
+#ifdef FSR4_HOST
+#define ASSET_ROOT (getenv("FSR4_ASSET_DIR") ? getenv("FSR4_ASSET_DIR") : "assets")
+#define OUTPUT_ROOT (getenv("FSR4_OUTPUT_DIR") ? getenv("FSR4_OUTPUT_DIR") : ".")
+static int sceKernelDebugOutText(int level, const char *text) { (void)level; return fputs(text, stdout); }
+#else
+#include <sys/stat.h>
+#define ASSET_ROOT "/app0/assets"
+#define OUTPUT_ROOT output_root()
 extern int sceKernelDebugOutText(int level, const char *text);
+/* Prefer a directory the development host can read back; the sandbox is the fallback. */
+static const char *output_root(void)
+{
+    static const char *chosen;
+    static const char *const candidates[] = {"/data/fsr4-results", "/app0/results", "/download0"};
+    for (unsigned i = 0; !chosen && i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        char probe[128];
+        mkdir(candidates[i], 0777);
+        snprintf(probe, sizeof(probe), "%s/.writable", candidates[i]);
+        FILE *f = fopen(probe, "wb");
+        if (f && fputc('1', f) != EOF && !fclose(f)) chosen = candidates[i];
+        else if (f) fclose(f);
+    }
+    return chosen ? chosen : "/download0";
+}
+#endif
 static void report(const char *format, ...)
 {
     char message[2048];
@@ -32,8 +61,8 @@ static void report(const char *format, ...)
 
 static void *asset(const char *name, void *data, size_t bytes)
 {
-    char path[256];
-    if (snprintf(path, sizeof(path), "/app0/assets/%s", name) >= (int)sizeof(path))
+    char path[1024];
+    if (snprintf(path, sizeof(path), "%s/%s", ASSET_ROOT, name) >= (int)sizeof(path))
         return NULL;
     FILE *f = fopen(path, "rb");
     if (!f) { report("ASSET open %s errno=%d\n", path, errno); return NULL; }
@@ -152,7 +181,12 @@ static int execute(VkCommandBuffer command)
     VkSubmitInfo submit={.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .commandBufferCount=1,.pCommandBuffers=&command};
     CHECK(vkQueueSubmit(queue,1,&submit,fence));
-    VkResult result=vkWaitForFences(device,1,&fence,VK_TRUE,UINT64_C(10000000000));
+#ifdef FSR4_HOST
+    const uint64_t timeout=UINT64_MAX;  /* CPU drivers can need minutes per network pass. */
+#else
+    const uint64_t timeout=UINT64_C(10000000000);
+#endif
+    VkResult result=vkWaitForFences(device,1,&fence,VK_TRUE,timeout);
     report("FSR4_FRAME_FENCE result=%d\n",result);
     /* Never release storage while completion is unknown. */
     if(result!=VK_SUCCESS) for(;;)usleep(100000);
@@ -358,6 +392,16 @@ static int run(void)
     VkDeviceCreateInfo di={.sType=VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount=1,.pQueueCreateInfos=&qi,.pEnabledFeatures=&features,
         .enabledExtensionCount=1,.ppEnabledExtensionNames=&extension};
+#ifdef FSR4_HOST
+    /* A conformant driver requires the features the converted shaders declare. */
+    VkPhysicalDeviceVulkan13Features f13={.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceVulkan12Features f12={.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,.pNext=&f13};
+    VkPhysicalDeviceVulkan11Features f11={.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,.pNext=&f12};
+    VkPhysicalDeviceFeatures2 all={.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,.pNext=&f11};
+    vkGetPhysicalDeviceFeatures2(physical,&all);
+    f13.robustImageAccess=VK_FALSE;all.features.robustBufferAccess=VK_FALSE;
+    di.pNext=&all;di.pEnabledFeatures=NULL;di.enabledExtensionCount=0;
+#endif
     CHECK(vkCreateDevice(physical,&di,NULL,&device));
     vkGetDeviceQueue(device,0,0,&queue);
     vkGetPhysicalDeviceMemoryProperties(physical,&memory_properties);
@@ -391,7 +435,7 @@ static int run(void)
                 ++differences;
             }
             free(expected);mismatches+=differences;
-            char path[128];snprintf(path,sizeof(path),"/download0/fsr4-frame-r%u.bin",i);
+            char path[1024];snprintf(path,sizeof(path),"%s/fsr4-frame-r%u.bin",OUTPUT_ROOT,i);
             FILE*f=fopen(path,"wb");int ok=f && fwrite(r->mapped+256,1,d->bytes,f)==d->bytes;
             if(f && fclose(f))ok=0;
             report("FSR4_FRAME_RESULT resource=%u bytes=%zu mismatches=%zu output=%d\n",i,d->bytes,differences,ok);
@@ -413,15 +457,24 @@ static int run(void)
 }
 extern int fsr4_native_heap_init(void);
 extern size_t fsr4_native_heap_capacity(void);
+#ifdef FSR4_HOST
+int fsr4_native_heap_init(void) { return 0; }
+size_t fsr4_native_heap_capacity(void) { return 0; }
+#endif
 int main(void)
 {
-    log_file=fopen("/download0/fsr4-frame-result.txt","w");
+    char log_path[1024];
+    snprintf(log_path,sizeof(log_path),"%s/fsr4-frame-result.txt",OUTPUT_ROOT);
+    log_file=fopen(log_path,"w");
     int result=fsr4_native_heap_init();
-    report("FSR4_FRAME_BEGIN fixture=%s passes=%zu heap_result=%d heap_bytes=%zu\n",
-        FSR4_FIXTURE_ID,PASS_COUNT,result,fsr4_native_heap_capacity());
+    report("FSR4_FRAME_BEGIN fixture=%s passes=%zu heap_result=%d heap_bytes=%zu output=%s\n",
+        FSR4_FIXTURE_ID,PASS_COUNT,result,fsr4_native_heap_capacity(),OUTPUT_ROOT);
     if(!result && tensor_crc32((const uint8_t*)"123456789",9)==UINT32_C(0xcbf43926)) result=run();
     else result=1;
     report("FSR4_FRAME_END result=%s retired_dispatches=%zu\n",result?"FAIL":"PASS",retired);
     if(log_file)fclose(log_file);
+#ifdef FSR4_HOST
+    return result;
+#endif
     for(;;)usleep(100000);
 }
