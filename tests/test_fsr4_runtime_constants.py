@@ -72,6 +72,15 @@ class RuntimeConstants(unittest.TestCase):
     def test_static_reference(self):
         self.check_export("scalar-unpack", "static")
 
+    def test_motion_jitter(self):
+        self.check_export("motion", "motion")
+
+    def test_periodic_reset(self):
+        self.check_export("reset", "reset")
+
+    def test_standard_dynamic_range(self):
+        self.check_export("sdr", "sdr")
+
 
 if __name__ == "__main__":
     unittest.main()
