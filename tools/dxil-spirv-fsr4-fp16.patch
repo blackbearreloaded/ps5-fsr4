@@ -108,10 +108,20 @@ index fe1ad4c..210497e 100644
  	for (unsigned i = 0; i < 2; i++)
  	{
 diff --git a/opcodes/opcodes_llvm_builtins.cpp b/opcodes/opcodes_llvm_builtins.cpp
-index 4a7f235..2a36608 100644
+index 4a7f235..2a82d43 100644
 --- a/opcodes/opcodes_llvm_builtins.cpp
 +++ b/opcodes/opcodes_llvm_builtins.cpp
-@@ -473,9 +473,51 @@ static spv::Id emit_integer_division_instruction(Converter::Impl &impl, const In
+@@ -32,6 +32,9 @@
+ #include "dxil/dxil_ags.hpp"
+ #include "dxil/dxil_ray_tracing.hpp"
+ #include <limits>
++#ifdef PS5_FSR4_REFERENCE_FP16
++#include <cstdlib>
++#endif
+ 
+ namespace dxil_spv
+ {
+@@ -473,9 +476,54 @@ static spv::Id emit_integer_division_instruction(Converter::Impl &impl, const In
  	return call->id;
  }
  
@@ -121,6 +131,9 @@ index 4a7f235..2a36608 100644
 +// multiply to fuse. Keep precise operations and FP16 arithmetic unchanged.
 +static spv::Id fsr4_contract_fp32_add(Converter::Impl &impl, const llvm::BinaryOperator *instruction)
 +{
++    const char *policy = std::getenv("PS5_FSR4_FP32_FMA");
++    if (policy && policy[0] == '0' && policy[1] == 0)
++        return 0;
 +    if (impl.options.force_precise || !instruction->isFast() ||
 +        instruction->getOpcode() != llvm::Instruction::FAdd ||
 +        instruction->getType()->getTypeID() != llvm::Type::TypeID::FloatTyID)
@@ -163,7 +176,7 @@ index 4a7f235..2a36608 100644
  	bool signed_input = false;
  	bool is_width_sensitive = false;
  	bool is_precision_sensitive = false;
-@@ -1213,6 +1255,45 @@ static spv::Id emit_special_non_native_packing_bitcast(Converter::Impl &, const
+@@ -1213,6 +1261,45 @@ static spv::Id emit_special_non_native_packing_bitcast(Converter::Impl &, const
  	return 0;
  }
  
@@ -209,7 +222,7 @@ index 4a7f235..2a36608 100644
  template <typename InstructionType>
  static spv::Id emit_cast_instruction_impl(Converter::Impl &impl, const InstructionType *instruction)
  {
-@@ -1444,7 +1525,15 @@ static spv::Id emit_cast_instruction_impl(Converter::Impl &impl, const Instructi
+@@ -1444,7 +1531,15 @@ static spv::Id emit_cast_instruction_impl(Converter::Impl &impl, const Instructi
  		else
  			op = impl.allocate(opcode, instruction);
  

@@ -6,6 +6,7 @@ Run after make fsr4-dxil-converter; uses the pinned DXC and SPIR-V tools.
 """
 from pathlib import Path
 import re
+import os
 import subprocess
 import tempfile
 
@@ -44,17 +45,23 @@ def main():
             subprocess.run([str(dxc), "-T", "cs_6_6", "-E", "main",
                             "-enable-16bit-types", "-D", f"MODE={mode}",
                             "-Fo", str(dxil), str(shader)], check=True)
-            subprocess.run([str(converter), str(dxil), str(spv)], check=True)
-            subprocess.run([str(tools / "spirv-val"), "--target-env",
-                            "vulkan1.3", str(spv)], check=True)
-            assembly = subprocess.check_output([str(tools / "spirv-dis"), str(spv)], text=True)
-            fused = re.findall(r"(%\w+) = OpExtInst %\w+ %\w+ Fma ", assembly)
-            if mode == 0:
-                assert len(fused) == 1, assembly
-                assert f"OpDecorate {fused[0]} NoContraction" in assembly
-            else:
-                assert not fused, (mode, assembly)
-    print("PASS: fast FP32 contracts; precise, FP16 and precise products remain separate")
+            for policy in ("0", "1"):
+                env = dict(os.environ, PS5_FSR4_FP32_FMA=policy)
+                subprocess.run([str(converter), str(dxil), str(spv)], env=env, check=True)
+                subprocess.run([str(tools / "spirv-val"), "--target-env",
+                                "vulkan1.3", str(spv)], check=True)
+                assembly = subprocess.check_output([str(tools / "spirv-dis"), str(spv)], text=True)
+                fused = re.findall(r"(%\w+) = OpExtInst %\w+ %\w+ Fma ", assembly)
+                if mode == 0 and policy == "1":
+                    assert len(fused) == 1, assembly
+                    assert f"OpDecorate {fused[0]} NoContraction" in assembly
+                else:
+                    assert not fused, (mode, policy, assembly)
+        invalid = subprocess.run([str(converter), "--self-test"],
+                                 env=dict(os.environ, PS5_FSR4_FP32_FMA="typo"),
+                                 capture_output=True, text=True)
+        assert invalid.returncode == 2 and "must be 0 or 1" in invalid.stderr
+    print("PASS: explicit/default FP32 policies; precise and FP16 boundaries; invalid policy rejected")
 
 
 if __name__ == "__main__":

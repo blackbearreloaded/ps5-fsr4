@@ -50,12 +50,57 @@ def blob(out, data):
     return dict(sha256=digest, bytes=len(data))
 
 
-def export(capture, warp, out, variant="upstream-rc11"):
+def export_expectations(capture, variant, reference_run=None):
     outputs = {"upstream-rc11": OUTPUT_SHA,
                "scalar-unpack": "ed7f85a7edf0c90cb86cbddbfa361ac1ad8d2f41d7714752344059f1d0965860"}
     if variant not in outputs:
         raise ValueError("Unknown reference variant")
-    expected_output = outputs[variant]
+    if reference_run is None:
+        return 4, outputs[variant], None
+    reference_run = Path(reference_run)
+    capture_run = capture.parent
+    captured = json.loads((capture_run / "run.json").read_text())
+    reference = json.loads((reference_run / "run.json").read_text())
+    if reference_run.resolve() == capture_run.resolve() or "capture" in reference:
+        raise ValueError("A separate uncaptured reference run is required")
+    for key in ("workload", "provider_sha256", "reference_variant",
+                "probe_source_sha256", "runtime_sha256"):
+        if key not in reference or captured.get(key) != reference[key]:
+            raise ValueError("Capture/reference identity mismatch: " + key)
+    if reference["reference_variant"] != variant:
+        raise ValueError("Reference variant mismatch")
+    if reference["runtime_sha256"].get("d3d10warp.dll") != WARP_SHA:
+        raise ValueError("Reference WARP identity mismatch")
+    workload = reference["workload"]
+    frames = workload["frames"]
+    width, height = workload["output_size"]
+    if (type(frames) is not int or not 1 <= frames <= 600 or
+            any(type(x) is not int or x < 16 for x in (width, height)) or
+            width > 3840 or height > 2160):
+        raise ValueError("Invalid reference workload")
+    expected = reference["readback"]["sha256"]
+    for directory, manifest in ((reference_run, reference), (capture_run, captured)):
+        pixels = (directory / "output.rgba32f").read_bytes()
+        if (manifest.get("process_exit") != 0 or len(pixels) != width * height * 16 or
+                manifest["readback"].get("bytes") != len(pixels) or
+                manifest["readback"].get("sha256") != expected or
+                hashlib.sha256(pixels).hexdigest() != expected):
+            raise ValueError("Reference readback identity mismatch")
+    identity = captured["capture"]
+    if (identity["file"] != capture.name or
+            identity["sha256"] != hashlib.sha256(capture.read_bytes()).hexdigest()):
+        raise ValueError("Capture identity mismatch")
+    provenance = dict(workload=workload, provider_sha256=reference["provider_sha256"],
+                      reference_manifest_sha256=hashlib.sha256(
+                          (reference_run / "run.json").read_bytes()).hexdigest(),
+                      capture_manifest_sha256=hashlib.sha256(
+                          (capture_run / "run.json").read_bytes()).hexdigest(),
+                      output_matches_separate_uncaptured_run=True)
+    return frames, expected, provenance
+
+
+def export(capture, warp, out, variant="upstream-rc11", reference_run=None):
+    frames, expected_output, provenance = export_expectations(capture, variant, reference_run)
     if hashlib.sha256(warp.read_bytes()).hexdigest() != WARP_SHA:
         raise ValueError("WARP runtime identity mismatch")
     out.mkdir(parents=True, exist_ok=False)
@@ -139,18 +184,20 @@ def export(capture, warp, out, variant="upstream-rc11"):
                 record["before_event"] = blob(out, data)
             graph["dispatches"].append(entry)
             (out / "graph.json").write_text(json.dumps(graph, indent=2) + "\n")
-        if len(graph["dispatches"]) != 112:
-            raise ValueError("Expected 28 dispatches for each of four frames")
+        if len(graph["dispatches"]) != 28 * frames:
+            raise ValueError("Expected 28 dispatches for each of %d frames" % frames)
         matches = [x for x in graph["dispatches"][-1]["uav"]
                    if x.get("at_event", {}).get("sha256") == expected_output]
         if len(matches) != 1:
             raise ValueError("Replay output differs from the uncaptured reference")
-        receipt = dict(dispatches=112, resources=len(graph["resources"]),
+        receipt = dict(dispatches=28 * frames, resources=len(graph["resources"]),
                        unique_shaders=len({x["shader"]["sha256"] for x in graph["dispatches"]}),
                        final_output=matches[0]["descriptor"]["resource"],
                        final_output_sha256=expected_output, reference_variant=variant,
                        graph_sha256=hashlib.sha256((out / "graph.json").read_bytes()).hexdigest(),
                        copies_and_barriers_exported=False, uav_before_state_exported=True, ps5_execution=False)
+        if provenance is not None:
+            receipt["reference_run"] = provenance
         (out / "complete.json").write_text(json.dumps(receipt, indent=2) + "\n")
         return receipt
     finally:
@@ -165,7 +212,8 @@ if __name__ == "__main__":
     try:
         export(Path(os.environ["FSR4_CAPTURE_FILE"]),
                Path(os.environ["FSR4_WARP_DLL"]), Path(os.environ["FSR4_CAPTURE_EXPORT"]),
-               os.environ.get("FSR4_REFERENCE_VARIANT", "upstream-rc11"))
+               os.environ.get("FSR4_REFERENCE_VARIANT", "upstream-rc11"),
+               os.environ.get("FSR4_REFERENCE_RUN"))
     except Exception:
         path = Path(os.environ["FSR4_CAPTURE_EXPORT"])
         if path.is_dir() and not (path / "complete.json").exists():

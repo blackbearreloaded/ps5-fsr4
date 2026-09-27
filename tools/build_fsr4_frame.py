@@ -39,9 +39,12 @@ def sha(data):
 def load_capture(path, expected):
     raw = (path / "graph.json").read_bytes()
     receipt = json.loads((path / "complete.json").read_text())
-    if sha(raw) != expected or receipt["graph_sha256"] != expected or receipt["dispatches"] != 112:
+    graph = json.loads(raw)
+    count = len(graph["dispatches"])
+    if (sha(raw) != expected or receipt["graph_sha256"] != expected or
+            receipt["dispatches"] != count or count == 0 or count % 28 or count > 28 * 600):
         raise ValueError("Capture identity mismatch")
-    return json.loads(raw)
+    return graph
 
 
 def blob(path, record):
@@ -71,24 +74,51 @@ def validate_resource_continuity(dispatches):
                 state[resource] = binding["at_event"]
 
 
+def select_dispatches(graph, start_frame, frames, isolated=None):
+    count = len(graph["dispatches"])
+    if isolated is not None:
+        if frames != 1 or start_frame != 0:
+            raise ValueError("--frames/--start-frame cannot be combined with an isolated --dispatch")
+        if isolated < 0 or isolated >= count or isolated % 28 not in (0, 1, 27):
+            raise ValueError("Isolated dispatch is not a captured image stage")
+        return [isolated]
+    if start_frame < 0 or frames < 1 or (start_frame + frames) * 28 > count:
+        raise ValueError("Selected frames exceed the capture")
+    return list(range(28 * start_frame, 28 * (start_frame + frames)))
+
+
+def validate_shader_sequence(graph, baseline):
+    """Permit new dimensions/data only with the previously audited shader sequence."""
+    sequence = [x["shader"] for x in baseline["dispatches"][:28]]
+    for index, dispatch in enumerate(graph["dispatches"]):
+        if dispatch["shader"] != sequence[index % 28]:
+            raise ValueError("Captured shader sequence changed at pass %d" % index)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture", type=Path, default=ROOT / "build/reference-runtime/capture-export-scalar-unpack")
+    parser.add_argument("--capture-sha256", default=CORRECTED_GRAPH, help="Expected verified graph digest for an alternate workload")
     parser.add_argument("--original", type=Path, default=ROOT / "build/reference-runtime/capture-export-before01")
-    parser.add_argument("--dispatch", type=int, choices=[i for i in range(112) if i % 28 in (0, 1, 27)], help="An isolated image stage from any captured frame; default is the complete first frame")
-    parser.add_argument("--frames", type=int, choices=range(1, 5), default=1, help="Connected captured frames, retaining history")
-    parser.add_argument("--start-frame", type=int, choices=range(4), default=0, help="First captured frame; initializes resources from its reference input state")
+    parser.add_argument("--dispatch", type=int, help="An isolated image stage from any captured frame; default is the complete first frame")
+    parser.add_argument("--frames", type=int, choices=range(1, 601), default=1, help="Connected captured frames, retaining history")
+    parser.add_argument("--start-frame", type=int, choices=range(600), default=0, help="First captured frame; initializes resources from its reference input state")
+    parser.add_argument("--fp32-fma", choices=("explicit", "compiler-default"), default="explicit",
+                        help="Select the experimental explicit FP32 fusion or the prior compiler behavior")
     parser.add_argument("--out", type=Path, default=ROOT / "build/fsr4-frame-app")
     parser.add_argument("--use-staged-sdk", action="store_true")
     args = parser.parse_args()
     if args.dispatch is not None and (args.frames != 1 or args.start_frame != 0):
         parser.error("--frames/--start-frame cannot be combined with an isolated --dispatch")
-    if args.start_frame + args.frames > 4:
-        parser.error("Selected frames exceed the four-frame capture")
-    _, sdk, _, _, _ = native_inputs()
     capture, original, out = args.capture.resolve(), args.original.resolve(), args.out.resolve()
-    graph, old = load_capture(capture, CORRECTED_GRAPH), load_capture(original, ORIGINAL_GRAPH)
-    indices = list(range(28 * args.start_frame, 28 * (args.start_frame + args.frames))) if args.dispatch is None else [args.dispatch]
+    graph, old = load_capture(capture, args.capture_sha256), load_capture(original, ORIGINAL_GRAPH)
+    baseline = load_capture(ROOT / "build/reference-runtime/capture-export-scalar-unpack", CORRECTED_GRAPH)
+    validate_shader_sequence(graph, baseline)
+    try:
+        indices = select_dispatches(graph, args.start_frame, args.frames, args.dispatch)
+    except ValueError as error:
+        parser.error(str(error))
+    _, sdk, _, _, _ = native_inputs()
     validate_resource_continuity([graph["dispatches"][i] for i in indices])
     package = out / "PPSA88900"
     for folder in ["assets", "sce_sys", "sce_module"]:
@@ -98,8 +128,9 @@ def main():
     for index in indices:
         dispatch = graph["dispatches"][index]
         bindings, outputs = [], []
-        if dispatch["dispatchDimension"] != old["dispatches"][index]["dispatchDimension"]:
-            raise ValueError("Dispatch dimensions changed")
+        groups = dispatch["dispatchDimension"]
+        if len(groups) != 3 or any(type(x) is not int or not 1 <= x <= 65535 for x in groups):
+            raise ValueError("Invalid dispatch dimensions")
         for set_index, label in enumerate(["srv", "uav", "cbv", "samplers"]):
             for binding in dispatch[label]:
                 reflection = dispatch[label + "_reflection"][binding["access"]["index"]]
@@ -153,10 +184,10 @@ def main():
                     resource["expected"] = expected
                     outputs.append((n, zlib.crc32(expected)))
         # Execute the original DXIL. Corrected WARP supplies data, not a replacement PS5 shader.
-        shader = old["dispatches"][index]["shader"]
+        shader = old["dispatches"][index % 28]["shader"]
         passes.append(dict(index=index, groups=dispatch["dispatchDimension"],
                            shader=blob(original, shader), bindings=bindings, outputs=outputs))
-    env = dict(os.environ, PS5_PAYLOAD_SDK=str(sdk), PS5VK_SHADER_INT8_DIAGNOSTIC="1",
+    env = dict(os.environ, PS5_FSR4_FP32_FMA="1" if args.fp32_fma == "explicit" else "0", PS5_PAYLOAD_SDK=str(sdk), PS5VK_SHADER_INT8_DIAGNOSTIC="1",
                PS5VK_SHADER_INT16_DIAGNOSTIC="1", PS5VK_SUBGROUP_ALL_DIAGNOSTIC="1",
                PS5VK_FSR4_STORAGE_DIAGNOSTIC="1")
     if not args.use_staged_sdk:
@@ -180,7 +211,7 @@ def main():
     for n, dispatch in enumerate(passes):
         dxil, spv = out / f"pass{dispatch['index']}.dxil", out / f"pass{dispatch['index']}.spv"
         dxil.write_bytes(dispatch["shader"])
-        subprocess.run([str(ROOT / "build/fsr4_dxil_to_spirv"), str(dxil), str(spv)], check=True)
+        subprocess.run([str(ROOT / "build/fsr4_dxil_to_spirv"), str(dxil), str(spv)], env=env, check=True)
         subprocess.run([str(ROOT / "build/runtime-graphics/toolchain/usr/bin/spirv-val"), "--target-env", "vulkan1.3", str(spv)], check=True)
         code = spv.read_bytes()
         header += f"static const uint32_t code{n}[] = {{" + ",".join(hex(w) for w in struct.unpack(f"<{len(code)//4}I", code)) + "};\n"
@@ -196,10 +227,11 @@ def main():
     (out / "fsr4_frame_fixture.h").write_text(header)
     build_native_app(out, ROOT / "examples/native_consumer/fsr4_frame_main.c", "FSR4 Native Frame Test")
     manifest = dict(title="PPSA88900", fixture_id=fixture_id, dispatches=identities,
-                    translation_policy="scalar FP16 RTZ, typed-resource FP16 RTE, FP32 dot2 products, explicit FP32 FMA, FP16 denorm preserve",
+                    translation_policy="scalar FP16 RTZ, typed-resource FP16 RTE, FP32 dot2 products, " + args.fp32_fma + " FP32 FMA, FP16 denorm preserve",
+                    fp32_fma=args.fp32_fma,
                     converter_patch_sha256=sha((ROOT / "tools/dxil-spirv-fsr4-fp16.patch").read_bytes()),
                     converter_library_sha256=sha((ROOT / "build/dxil-spirv/libdxil-spirv-c-shared.so").read_bytes()),
-                    reference_graph_sha256=CORRECTED_GRAPH, original_graph_sha256=ORIGINAL_GRAPH,
+                    reference_graph_sha256=args.capture_sha256, original_graph_sha256=ORIGINAL_GRAPH,
                     complete_fsr4=False, hardware_tested=False,
                     frames=args.frames if args.dispatch is None else 0,
                     start_frame=args.start_frame if args.dispatch is None else args.dispatch // 28,

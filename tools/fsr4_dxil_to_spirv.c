@@ -58,6 +58,11 @@ static dxil_spv_bool sampler(void *unused, const dxil_spv_d3d_binding *src,
 
 int main(int argc, char **argv)
 {
+    const char *fma = getenv("PS5_FSR4_FP32_FMA");
+    if (fma && strcmp(fma, "0") && strcmp(fma, "1")) {
+        fprintf(stderr, "PS5_FSR4_FP32_FMA must be 0 or 1\n");
+        return 2;
+    }
     if (argc == 2 && !strcmp(argv[1], "--self-test")) {
         dxil_spv_d3d_binding in = {0};
         dxil_spv_vulkan_binding out;
