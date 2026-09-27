@@ -82,6 +82,33 @@ static VkQueue queue;
 static VkPhysicalDeviceMemoryProperties memory_properties;
 static VkCommandPool commands;
 static size_t stage_mismatches, retired;
+struct cached_pipeline {
+    const struct fsr4_pass *source;
+    VkDescriptorSetLayout sets[4];
+    VkPipelineLayout layout;
+    VkPipeline pipeline;
+};
+static struct cached_pipeline pipelines[PASS_COUNT];
+static size_t pipeline_count;
+
+static int same_pipeline(const struct fsr4_pass *a, const struct fsr4_pass *b)
+{
+    if (a->code_bytes != b->code_bytes || a->binding_count != b->binding_count ||
+        memcmp(a->code, b->code, a->code_bytes)) return 0;
+    for (unsigned i = 0; i < a->binding_count; ++i) {
+        const struct fsr4_binding *x = &a->bindings[i], *y = &b->bindings[i];
+        if (x->set != y->set || x->binding != y->binding || x->type != y->type)
+            return 0;
+    }
+    return 1;
+}
+
+static struct cached_pipeline *find_pipeline(const struct fsr4_pass *pass)
+{
+    for (size_t i = 0; i < pipeline_count; ++i)
+        if (same_pipeline(pipelines[i].source, pass)) return &pipelines[i];
+    return NULL;
+}
 
 static int allocate(const VkMemoryRequirements *req, VkDeviceSize extra,
                     VkDeviceMemory *memory, unsigned char **mapped)
@@ -192,27 +219,67 @@ static int create_resource(unsigned index)
         VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     return execute(command);
 }
-static int dispatch_pass(const struct fsr4_pass *p, VkSampler sampler)
+static void destroy_pipeline(struct cached_pipeline *entry)
 {
-    report("FSR4_FRAME_DISPATCH index=%u groups=%u,%u,%u\n",
-        p->index,p->groups[0],p->groups[1],p->groups[2]);
-    VkDescriptorSetLayout layouts[4];
+    if(entry->pipeline)vkDestroyPipeline(device,entry->pipeline,NULL);
+    if(entry->layout)vkDestroyPipelineLayout(device,entry->layout,NULL);
+    for(unsigned set=0;set<4;++set)
+        if(entry->sets[set])vkDestroyDescriptorSetLayout(device,entry->sets[set],NULL);
+    *entry=(struct cached_pipeline){0};
+}
+static struct cached_pipeline *create_pipeline(const struct fsr4_pass *p)
+{
+    struct cached_pipeline *entry = &pipelines[pipeline_count];
+    entry->source = p;
+    VkShaderModule shader=VK_NULL_HANDLE;
+    VkResult result=VK_SUCCESS;
     for(unsigned set=0;set<4;++set){
         VkDescriptorSetLayoutBinding bindings[32];unsigned count=0;
         for(unsigned i=0;i<p->binding_count;++i)if(p->bindings[i].set==set){
             const struct fsr4_binding *b=&p->bindings[i];
-            if(count==32)return 1;
+            if(count==32){result=VK_ERROR_INITIALIZATION_FAILED;goto fail;}
             bindings[count++]=(VkDescriptorSetLayoutBinding){.binding=b->binding,
                 .descriptorType=b->type,.descriptorCount=1,.stageFlags=VK_SHADER_STAGE_COMPUTE_BIT};
         }
         VkDescriptorSetLayoutCreateInfo info={.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             .bindingCount=count,.pBindings=count?bindings:NULL};
-        CHECK(vkCreateDescriptorSetLayout(device,&info,NULL,&layouts[set]));
+        result=vkCreateDescriptorSetLayout(device,&info,NULL,&entry->sets[set]);
+        if(result!=VK_SUCCESS)goto fail;
     }
-    VkPipelineLayout layout;
     VkPipelineLayoutCreateInfo li={.sType=VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount=4,.pSetLayouts=layouts};
-    CHECK(vkCreatePipelineLayout(device,&li,NULL,&layout));
+        .setLayoutCount=4,.pSetLayouts=entry->sets};
+    result=vkCreatePipelineLayout(device,&li,NULL,&entry->layout);
+    if(result!=VK_SUCCESS)goto fail;
+    VkShaderModuleCreateInfo si={.sType=VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize=p->code_bytes,.pCode=p->code};
+    result=vkCreateShaderModule(device,&si,NULL,&shader);
+    if(result!=VK_SUCCESS)goto fail;
+    VkComputePipelineCreateInfo ci={.sType=VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage={.sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage=VK_SHADER_STAGE_COMPUTE_BIT,.module=shader,.pName="main"},
+        .layout=entry->layout};
+    result=vkCreateComputePipelines(device,VK_NULL_HANDLE,1,&ci,NULL,&entry->pipeline);
+    vkDestroyShaderModule(device,shader,NULL);
+    shader=VK_NULL_HANDLE;
+    if(result!=VK_SUCCESS)goto fail;
+    ++pipeline_count;
+    return entry;
+fail:
+    if(shader)vkDestroyShaderModule(device,shader,NULL);
+    destroy_pipeline(entry);
+    report("FSR4_FRAME_PIPELINE pass=%u result=%d\n",p->index,(int)result);
+    return NULL;
+}
+static int dispatch_pass(const struct fsr4_pass *p, VkSampler sampler)
+{
+    report("FSR4_FRAME_DISPATCH index=%u groups=%u,%u,%u\n",
+        p->index,p->groups[0],p->groups[1],p->groups[2]);
+    struct cached_pipeline *entry=find_pipeline(p);
+    if(!entry) entry=create_pipeline(p);
+    if(!entry)return 1;
+    const VkDescriptorSetLayout *layouts=entry->sets;
+    VkPipelineLayout layout=entry->layout;
+    VkPipeline pipeline=entry->pipeline;
     VkDescriptorPoolSize sizes[5]={{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,0},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,0},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,0},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,0},{VK_DESCRIPTOR_TYPE_SAMPLER,0}};
@@ -241,15 +308,6 @@ static int dispatch_pass(const struct fsr4_pass *p, VkSampler sampler)
         else w.pImageInfo=&image;
         vkUpdateDescriptorSets(device,1,&w,0,NULL);
     }
-    VkShaderModule shader;
-    VkShaderModuleCreateInfo si={.sType=VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize=p->code_bytes,.pCode=p->code};
-    CHECK(vkCreateShaderModule(device,&si,NULL,&shader));
-    VkComputePipelineCreateInfo ci={.sType=VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .stage={.sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage=VK_SHADER_STAGE_COMPUTE_BIT,.module=shader,.pName="main"},.layout=layout};
-    VkPipeline pipeline;
-    CHECK(vkCreateComputePipelines(device,VK_NULL_HANDLE,1,&ci,NULL,&pipeline));
     VkCommandBuffer command;
     if(begin(&command))return 1;
     VkMemoryBarrier barrier={.sType=VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -282,9 +340,7 @@ static int dispatch_pass(const struct fsr4_pass *p, VkSampler sampler)
         report("FSR4_FRAME_CRC pass=%u resource=%u actual=%08x expected=%08x match=%d\n",
             p->index,n,crc,p->outputs[i].crc,crc==p->outputs[i].crc);
     }
-    vkDestroyPipeline(device,pipeline,NULL);vkDestroyShaderModule(device,shader,NULL);
-    vkDestroyDescriptorPool(device,pool,NULL);vkDestroyPipelineLayout(device,layout,NULL);
-    for(unsigned i=0;i<4;++i)vkDestroyDescriptorSetLayout(device,layouts[i],NULL);
+    vkDestroyDescriptorPool(device,pool,NULL);
     return 0;
 }
 static int run(void)
@@ -343,6 +399,8 @@ static int run(void)
         }
     }
     report("FSR4_FRAME_TOTAL mismatches=%zu guards=%zu stage_mismatches=%zu\n",mismatches,guards,stage_mismatches);
+    report("FSR4_FRAME_PIPELINES created=%zu passes=%zu\n",pipeline_count,PASS_COUNT);
+    for(size_t i=0;i<pipeline_count;++i)destroy_pipeline(&pipelines[i]);
     vkDestroySampler(device,sampler,NULL);
     for(unsigned i=0;i<RESOURCE_COUNT;++i){
         struct resource*r=&resources[i];
