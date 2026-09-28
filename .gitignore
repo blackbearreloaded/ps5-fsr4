@@ -1,0 +1,10 @@
+build/
+dist-sdk/
+__pycache__/
+*.pyc
+*.log
+
+# Keep generated diagnostics, captures and results out of history.
+docs/*_RESULT.json
+docs/SOURCE_AUDIT.json
+local-results/

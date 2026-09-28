@@ -1,0 +1,64 @@
+# Building FSR4 for PS5
+
+## Requirements
+
+- Linux (WSL works) with Python 3.11+, CMake, Ninja and a C compiler.
+- The payload SDK and native app template the driver's SDK builder uses: set
+  `PS5_PAYLOAD_SDK` and `PS5_NATIVE_APP_TEMPLATE` as described in
+  [the driver's build notes](external/ps5-vulkan/BUILDING.md).
+- The pinned dxil-spirv checkout (`DXIL_SPIRV_DIR`, default
+  `../references/dxil-spirv`) and the pinned DXC under
+  `build/reference-runtime/dxc/`.
+- Local FSR4 reference exports under `build/reference-runtime/`, created as
+  described in [the reference procedure](docs/FSR4_REFERENCE_RUNTIME.md). They
+  are never committed.
+
+## Build
+
+```sh
+git submodule update --init
+make driver   # pinned driver dependencies, PSBC (PS5 and host), driver SDK with the FSR4 profile
+make sdk      # converter, pass tables, then dist-sdk: the driver SDK plus libps5_fsr4.a
+make demo     # PPSA88900 interactive demo against dist-sdk
+make check    # host tests
+```
+
+`make driver-sdk` stages the driver SDK with the profile FSR4 needs:
+`PS5VK_SHADER_INT8_DIAGNOSTIC`, `PS5VK_SHADER_INT16_DIAGNOSTIC`,
+`PS5VK_SUBGROUP_ALL_DIAGNOSTIC` and `PS5VK_EXTENDED_COMPUTE_DIAGNOSTIC`. The FSR4
+tools copy it into `dist-sdk` whenever it changes. To build against a driver
+checkout elsewhere, set `PS5VK_ROOT` for the tools and `DRIVER` for make.
+
+A pipeline cache is only valid for the `libps5vk.a` build that saved it; see
+[the SDK guide](docs/FSR4_SDK.md).
+
+## Native FSR4 applications
+
+These PPSA88900 applications use the prepared native template and payload SDK
+and write their own result files:
+
+- the runtime test (`tools/build_fsr4_runtime_test.py`) behind the
+  [acceptance](VALIDATION.md#fsr4-acceptance);
+- the interactive demo (`tools/build_fsr4_demo.py`), built from the staged
+  [FSR4 SDK](docs/FSR4_SDK.md);
+- the replay and precision witnesses below.
+
+They need the driver SDK staged with the FSR4 profile (`make driver-sdk`).
+
+The frame builder requires the original and corrected local reference exports
+documented in [the reference procedure](docs/FSR4_REFERENCE_RUNTIME.md). The
+precision witnesses require the pinned DXC and converter but no capture:
+
+```sh
+python3 tools/build_fsr4_precision_probe.py --rounding rtz --out build/fsr4-precision-rtz-app
+python3 tools/build_fsr4_precision_probe.py --rounding rte --out build/fsr4-texture-rte-app
+python3 tools/build_fsr4_frame.py --dispatch 29 --use-staged-sdk --out build/fsr4-image29-app
+python3 tools/build_fsr4_frame.py --frames 4 --use-staged-sdk --out build/fsr4-temporal-app
+python3 -m unittest tests.test_fsr4_precision_corpus tests.test_fsr4_frame_continuity tests.test_fsr4_image_compare
+python3 tests/test_fsr4_converter_fma.py
+```
+
+The RTZ test checks scalar conversion; the RTE test checks typed texture loads,
+including subnormals and ties. Constructing an app does not validate its
+output; keep results local. Use only the console explicitly authorized in your
+local configuration.

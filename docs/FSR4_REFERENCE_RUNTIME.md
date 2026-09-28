@@ -11,7 +11,7 @@ Agility runtime, WARP runtime and rebuilt BC250 provider under
 build/reference-runtime/. See tools/fsr4_reference_probe.py for pinned inputs.
 
     python3 tools/fsr4_reference_probe.py --run
-    python3 tools/run_python_tests.py test_fsr4_reference_probe
+    python3 -m unittest tests.test_fsr4_reference_probe
 
 The reference runner uses Windows interop from WSL. It does not replace system DLLs.
 The exporter validates capture identity, workload and independent output.

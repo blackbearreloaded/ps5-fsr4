@@ -16,10 +16,11 @@
 > the native PS5 adaptation, integration and validation.
 > See [full credits and source provenance](LICENSING.md#fsr4-and-bc250-credits).
 
-A working copy of [Manuel Pereira's ps5-vulkan](https://github.com/mpereiraesaa/ps5-vulkan),
-being developed toward a reusable **FSR 4.1.1 INT8 SDK for native PS5 homebrew**.
-The imported Vulkan code is copyright its original authors. This project is
-maintained by BlackBearReloaded and is independent of the upstream project.
+A reusable **FSR 4.1.1 INT8 SDK for native PS5 homebrew**, running on Vulkan
+compute. The Vulkan driver is the [`external/ps5-vulkan`](external/ps5-vulkan)
+submodule: BlackBearReloaded's fork of
+[Manuel Pereira's ps5-vulkan](https://github.com/mpereiraesaa/ps5-vulkan).
+This project is independent of the upstream driver project.
 
 **Status:** Experimental.
 
@@ -32,6 +33,20 @@ maintained by BlackBearReloaded and is independent of the upstream project.
 - `tools/build_fsr4_sdk.py` stages the SDK: `libps5_fsr4.a`, its header,
   notices and a warmed pipeline cache ([FSR4 SDK](docs/FSR4_SDK.md)).
 
+## Layout
+
+| Path | Contents |
+| --- | --- |
+| `include/ps5fsr4/` | Public C API |
+| `src/` | Runtime: context, dispatch, constants and pass tables |
+| `tools/` | Shader converter, reference exports, runtime/SDK/app builders, acceptance, benchmark |
+| `tests/` | Host tests |
+| `examples/` | Runtime test, interactive demo, replay witnesses, GPU benchmark |
+| `docs/` | SDK guide, reference procedure, research notes |
+| `external/ps5-vulkan/` | The Vulkan driver (submodule) |
+
+Clone with `git clone --recurse-submodules`, then follow [BUILDING.md](BUILDING.md).
+
 ## Development
 
 - [Build instructions](BUILDING.md)
@@ -39,7 +54,7 @@ maintained by BlackBearReloaded and is independent of the upstream project.
 - [Validation](VALIDATION.md)
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md)
 - [Reference tools](docs/FSR4_REFERENCE_RUNTIME.md)
-- [Vulkan API](API.md)
+- [Vulkan driver API](external/ps5-vulkan/API.md)
 
 Keep test captures, logs and detailed results local. Commit code changes with
 brief descriptions. This repository remains public.
@@ -47,4 +62,4 @@ brief descriptions. This repository remains public.
 ## License
 
 Project code is GPL-3.0-or-later. See [LICENSE](LICENSE) and
-[LICENSING.md](LICENSING.md) for upstream credits and dependency terms.
+[LICENSING.md](LICENSING.md) for credits and the driver and AMD terms.

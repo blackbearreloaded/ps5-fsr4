@@ -30,24 +30,20 @@ default `../references/dxil-spirv`). The pass-table generator also needs the
 pinned DXC under `build/reference-runtime/dxc/`.
 
 ```sh
-make vulkan-headers native-deps compiler-deps fsr4-dxil-converter
 export PS5_PAYLOAD_SDK=/absolute/path/to/ps5-payload-sdk
-python3 tools/build_psbc.py --target ps5
-PS5VK_SHADER_INT8_DIAGNOSTIC=1 PS5VK_SHADER_INT16_DIAGNOSTIC=1 \
-PS5VK_SUBGROUP_ALL_DIAGNOSTIC=1 PS5VK_FSR4_STORAGE_DIAGNOSTIC=1 \
-python3 tools/build_sdk.py
-python3 tools/build_fsr4_runtime.py
-python3 tools/build_fsr4_sdk.py
+make driver   # driver dependencies, PSBC and the driver SDK with the FSR4 profile
+make sdk      # converter, pass tables and dist-sdk
 ```
 
-The four `PS5VK_*` switches select the driver profile FSR4 needs:
+`make driver-sdk` sets the four `PS5VK_*` switches of the driver profile FSR4 needs:
 
 - INT8 and INT16 shader arithmetic;
 - the subgroup vote;
 - sampled storage images up to 1920×1080.
 
-`build_fsr4_sdk.py` links a C and a C++ consumer against a relocated copy of the
-SDK, using only its headers and archives.
+`build_fsr4_sdk.py` copies the driver SDK into `dist-sdk`, adds the FSR4 runtime,
+then links a C and a C++ consumer against a relocated copy of the SDK, using
+only its headers and archives.
 
 A pipeline cache is only valid for the `libps5vk.a` build that saved it. Produce
 one by running the runtime test on the PS5 without a cache: it saves
@@ -94,7 +90,7 @@ one by running the runtime test on the PS5 without a cache: it saves
 
    `build_native_app` in `tools/build_fsr4_clear.py` has the complete command.
 
-`examples/native_consumer/fsr4_demo_main.c` is a complete interactive consumer.
+`examples/fsr4_demo_main.c` is a complete interactive consumer.
 It renders a scene at 720p, upscales it, and shows FSR4, bilinear or a split
 view on the display, switchable with the controller. Build it from the staged
 SDK with `tools/build_fsr4_demo.py`.
