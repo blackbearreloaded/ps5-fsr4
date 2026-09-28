@@ -122,7 +122,10 @@ class Kernel:
                 head.append(f"layout(set = {set_index}, binding = {binding}) buffer Scratch {{ uvec4 scratch[]; }};")
             elif kind == "tensor":
                 head.append(f"layout(set = {set_index}, binding = {binding}) uniform Tensor {{ uvec4 tensor_rows[17]; }};")
-        head += ["int rne(int x, int s) { return (x + ((1 << (s - 1)) - 1) + ((x >> s) & 1)) >> s; }",
+        # Round half to even: the tie-breaking bit s comes from one unsigned bitfield extract.
+        head += ["int rne(int x, int s) {",
+                 "  return (x + ((1 << (s - 1)) - 1) + int(bitfieldExtract(uint(x), s, 1))) >> s;",
+                 "}",
                  "uint pack4(int a, int b, int c, int d) {",
                  "  return (uint(a) & 0xffu) | ((uint(b) & 0xffu) << 8) | ((uint(c) & 0xffu) << 16) | (uint(d) << 24);",
                  "}", "void main() {"]
