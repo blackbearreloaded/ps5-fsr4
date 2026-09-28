@@ -180,7 +180,16 @@ def convert(capture, record, index, out, env):
     return dxil, spv.read_bytes()
 
 
-OP_TYPE_BOOL, OP_CONSTANT_TRUE, OP_FUNCTION, OP_COPY_OBJECT, OP_GROUP_ALL = 20, 41, 54, 83, 334
+OP_CAPABILITY, OP_TYPE_BOOL, OP_CONSTANT_TRUE, OP_FUNCTION = 17, 20, 41, 54
+OP_COPY_OBJECT, OP_BRANCH_CONDITIONAL, OP_GROUP_ALL = 83, 250, 334
+CAPABILITY_GROUP_NON_UNIFORM, CAPABILITY_GROUP_NON_UNIFORM_VOTE = 61, 62
+# Dead-code removal once the vote is constant. Inlining lets the aggressive pass drop the
+# comparison loop (it keeps function calls); the interface pass then frees the subgroup
+# built-ins the loop read, so the second aggressive pass and the trim remove them and
+# their capabilities. Instruction simplification is left out: it rewrites live code.
+GUARD_STRIP_PASSES = ("--eliminate-dead-branches", "--inline-entry-points-exhaustive", "--eliminate-dead-functions",
+                      "--eliminate-dead-code-aggressive", "--remove-unused-interface-variables",
+                      "--eliminate-dead-code-aggressive", "--trim-capabilities")
 
 
 def specialize_model_guard(code):
@@ -189,13 +198,14 @@ def specialize_model_guard(code):
     Passes 3, 6, 7, 8, 9 and 11 compare their model interval with the model
     their fast path was baked from, then vote (OpGroupNonUniformAll) between
     that path and a generic fallback. The runtime embeds exactly that model, so
-    the vote is always true: making it a constant lets the compiler drop the
+    the vote is always true: the branch it steers takes the true constant and
+    the vote becomes a copy of it, which lets dead-code removal drop the
     comparison loads and the fallback body. Returns the code unchanged when it
     has no vote.
     """
     words = list(struct.unpack(f"<{len(code) // 4}I", code))
     bool_type = true_id = first_function = None
-    votes = []
+    votes = {}
     i = 5
     while i < len(words):
         count, op = words[i] >> 16, words[i] & 0xffff
@@ -206,7 +216,7 @@ def specialize_model_guard(code):
         elif op == OP_FUNCTION and first_function is None:
             first_function = i
         elif op == OP_GROUP_ALL:
-            votes.append(i)
+            votes[i] = words[i + 2]
         i += count
     if not votes:
         return code
@@ -217,13 +227,42 @@ def specialize_model_guard(code):
     result = words[:first_function] + insert
     i = first_function
     while i < len(words):
-        count = words[i] >> 16
+        count, op = words[i] >> 16, words[i] & 0xffff
         if i in votes:
             result += [(4 << 16) | OP_COPY_OBJECT, words[i + 1], words[i + 2], true_id]
+        elif op == OP_BRANCH_CONDITIONAL and words[i + 1] in votes.values():
+            result += [words[i], true_id] + words[i + 2:i + count]
         else:
             result += words[i:i + count]
         i += count
     return struct.pack(f"<{len(result)}I", *result)
+
+
+def capabilities(code):
+    words = struct.unpack(f"<{len(code) // 4}I", code)
+    found, i = set(), 5
+    while i < len(words):
+        if words[i] & 0xffff == OP_CAPABILITY:
+            found.add(words[i + 1])
+        i += words[i] >> 16
+    return found
+
+
+def strip_model_guard(spv):
+    """Remove the code a specialized guard left dead, down to its subgroup capabilities.
+
+    The comparison loop reads the subgroup built-ins, so without this the module
+    still declares GroupNonUniform and GroupNonUniformVote with no subgroup
+    operation, which ps5vk refuses at vkCreateShaderModule.
+    """
+    subprocess.run([str(TOOLCHAIN_BIN / "spirv-opt"), "--target-env=vulkan1.3", *GUARD_STRIP_PASSES,
+                    str(spv), "-o", str(spv)], check=True)
+    subprocess.run([str(TOOLCHAIN_BIN / "spirv-val"), "--target-env", "vulkan1.3", str(spv)], check=True)
+    code = spv.read_bytes()
+    left = capabilities(code) & {CAPABILITY_GROUP_NON_UNIFORM, CAPABILITY_GROUP_NON_UNIFORM_VOTE}
+    if left:
+        raise SystemExit(f"{spv.name}: subgroup capabilities {sorted(left)} remain after removing the model guard")
+    return code
 
 
 def emit_code(header, index, code, bindings):
@@ -276,8 +315,7 @@ def main():
             if specialized != code:
                 spv = out / f"pass{index}.spv"
                 spv.write_bytes(specialized)
-                subprocess.run([str(TOOLCHAIN_BIN / "spirv-val"), "--target-env", "vulkan1.3", str(spv)], check=True)
-                code = specialized
+                code = strip_model_guard(spv)
         emit_code(header, index, code, bindings)
         rule = group_rule(index, dispatch, dxil, output)
         passes.append((index, constants_kind(index, dispatch), rule, len(bindings)))
