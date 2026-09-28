@@ -1,0 +1,59 @@
+#version 450
+// Copyright (C) 2026 BlackBearReloaded
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// FSR4 comparison capture: tonemaps one rectangle of a capture into packed
+// BGRA8 words for the host, with the demo's display transform (ACES fit, sRGB).
+// Modes: 0 the FSR4 output, 1 a bilinear upscale of the render-resolution
+// scene, 2 the output-resolution scene, 3 the render-resolution scene at its
+// own size, 4 the supersampling accumulator's average.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D upscaled;
+layout(set = 0, binding = 1, rgba16f) uniform readonly image2D lowres;
+layout(set = 0, binding = 2, rgba16f) uniform readonly image2D native;
+layout(set = 0, binding = 3, std430) writeonly buffer Pixels { uint pixels[]; };
+layout(set = 0, binding = 4, rgba32f) uniform readonly image2D accumulator;
+
+layout(push_constant) uniform Params {
+    ivec4 region;   // x, y, width, height of the rectangle (render pixels in mode 3, else output pixels)
+    vec4 view;      // mode, render width, render height, 0
+} p;
+
+const vec2 OUTPUT = vec2(1920.0, 1080.0);
+
+vec3 bilinear(vec2 uv)
+{
+    vec2 size = p.view.yz;
+    vec2 q = uv * size - 0.5;
+    ivec2 i = ivec2(floor(q));
+    vec2 f = q - vec2(i);
+    ivec2 hi = ivec2(size) - 1;
+    vec3 a = imageLoad(lowres, clamp(i, ivec2(0), hi)).rgb;
+    vec3 b = imageLoad(lowres, clamp(i + ivec2(1, 0), ivec2(0), hi)).rgb;
+    vec3 c = imageLoad(lowres, clamp(i + ivec2(0, 1), ivec2(0), hi)).rgb;
+    vec3 d = imageLoad(lowres, clamp(i + ivec2(1, 1), ivec2(0), hi)).rgb;
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+vec3 tonemap(vec3 c)
+{
+    c = max(c, 0.0);
+    c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);   // ACES fit, as the demo
+    return mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+void main()
+{
+    ivec2 i = ivec2(gl_GlobalInvocationID.xy);
+    if (i.x >= p.region.z || i.y >= p.region.w) return;
+    ivec2 q = p.region.xy + i;
+    int mode = int(p.view.x + 0.5);
+    vec3 color;
+    if (mode == 0) color = imageLoad(upscaled, q).rgb;
+    else if (mode == 1) color = bilinear((vec2(q) + 0.5) / OUTPUT);
+    else if (mode == 2) color = imageLoad(native, q).rgb;
+    else if (mode == 3) color = imageLoad(lowres, q).rgb;
+    else { vec4 sum = imageLoad(accumulator, q); color = sum.rgb / max(sum.a, 1.0); }
+    uvec3 c = uvec3(clamp(tonemap(color), 0.0, 1.0) * 255.0 + 0.5);
+    pixels[i.y * p.region.z + i.x] = c.b | (c.g << 8) | (c.r << 16) | (255u << 24);
+}

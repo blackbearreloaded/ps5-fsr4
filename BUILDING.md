@@ -69,6 +69,12 @@ and write their own result files:
 - the headless benchmark (`tools/build_fsr4_bench.py`), which times 720p to
   1080p upscaling from submission to fence and profiles each pass, without a
   display or a capture;
+- the comparison capture (`tools/build_fsr4_compare.py`), which renders fixed
+  shots of the demo scene at 1280×720 and 960×540 and writes the bilinear
+  upscale, the converged FSR4 output, a native 1080p render, a 64-sample
+  supersampled reference and an orbiting clip; fetch its `fsr4-compare-*`
+  files and run `tools/build_fsr4_comparisons.py` on them for crops, 3× zooms,
+  PSNR/SSIM against the reference and side-by-side videos;
 - the replay and precision witnesses below.
 
 They need the driver SDK staged with the FSR4 profile (`make driver-sdk`).

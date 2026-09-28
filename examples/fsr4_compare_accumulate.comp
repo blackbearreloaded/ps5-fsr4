@@ -1,0 +1,22 @@
+#version 450
+// Copyright (C) 2026 BlackBearReloaded
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// FSR4 comparison capture: adds one jittered output-resolution render of the
+// demo scene to the supersampling accumulator (linear HDR; alpha counts the
+// samples). The first sample overwrites.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba16f) uniform readonly image2D color_in;
+layout(set = 0, binding = 1, rgba32f) uniform image2D accumulator;
+
+layout(push_constant) uniform Params {
+    vec4 p;   // first sample (1 or 0), 0, width, height
+} params;
+
+void main()
+{
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    if (q.x >= int(params.p.z) || q.y >= int(params.p.w)) return;
+    vec4 sum = params.p.x > 0.5 ? vec4(0.0) : imageLoad(accumulator, q);
+    imageStore(accumulator, q, sum + vec4(imageLoad(color_in, q).rgb, 1.0));
+}
