@@ -180,6 +180,52 @@ def convert(capture, record, index, out, env):
     return dxil, spv.read_bytes()
 
 
+OP_TYPE_BOOL, OP_CONSTANT_TRUE, OP_FUNCTION, OP_COPY_OBJECT, OP_GROUP_ALL = 20, 41, 54, 83, 334
+
+
+def specialize_model_guard(code):
+    """Replace the matching-model wave vote with true.
+
+    Passes 3, 6, 7, 8, 9 and 11 compare their model interval with the model
+    their fast path was baked from, then vote (OpGroupNonUniformAll) between
+    that path and a generic fallback. The runtime embeds exactly that model, so
+    the vote is always true: making it a constant lets the compiler drop the
+    comparison loads and the fallback body. Returns the code unchanged when it
+    has no vote.
+    """
+    words = list(struct.unpack(f"<{len(code) // 4}I", code))
+    bool_type = true_id = first_function = None
+    votes = []
+    i = 5
+    while i < len(words):
+        count, op = words[i] >> 16, words[i] & 0xffff
+        if op == OP_TYPE_BOOL:
+            bool_type = words[i + 1]
+        elif op == OP_CONSTANT_TRUE and words[i + 1] == bool_type:
+            true_id = words[i + 2]
+        elif op == OP_FUNCTION and first_function is None:
+            first_function = i
+        elif op == OP_GROUP_ALL:
+            votes.append(i)
+        i += count
+    if not votes:
+        return code
+    insert = []
+    if true_id is None:
+        true_id, words[3] = words[3], words[3] + 1
+        insert = [(3 << 16) | OP_CONSTANT_TRUE, bool_type, true_id]
+    result = words[:first_function] + insert
+    i = first_function
+    while i < len(words):
+        count = words[i] >> 16
+        if i in votes:
+            result += [(4 << 16) | OP_COPY_OBJECT, words[i + 1], words[i + 2], true_id]
+        else:
+            result += words[i:i + count]
+        i += count
+    return struct.pack(f"<{len(result)}I", *result)
+
+
 def emit_code(header, index, code, bindings):
     words = struct.unpack(f"<{len(code) // 4}I", code)
     header.append(f"static const uint32_t fsr4_code{index}[] = {{" + ",".join(hex(w) for w in words) + "};")
@@ -195,6 +241,8 @@ def main():
                         help="Export whose frames end with RCAS sharpening (optional)")
     parser.add_argument("--out", type=Path, default=ROOT / "build/fsr4-runtime")
     parser.add_argument("--fp32-fma", choices=("explicit", "compiler-default"), default="explicit")
+    parser.add_argument("--keep-model-guards", action="store_true",
+                        help="Keep the runtime model comparison and fallback in passes 3, 6-9 and 11")
     args = parser.parse_args()
     capture, original = args.capture.resolve(), args.original.resolve()
     graph = load_capture(capture, json.loads((capture / "complete.json").read_text())["graph_sha256"])
@@ -223,6 +271,13 @@ def main():
                 raise ValueError("Model initializers differ between passes")
             weights = data
         dxil, code = convert(original, source["shader"], index, out, env)
+        if not args.keep_model_guards:
+            specialized = specialize_model_guard(code)
+            if specialized != code:
+                spv = out / f"pass{index}.spv"
+                spv.write_bytes(specialized)
+                subprocess.run([str(TOOLCHAIN_BIN / "spirv-val"), "--target-env", "vulkan1.3", str(spv)], check=True)
+                code = specialized
         emit_code(header, index, code, bindings)
         rule = group_rule(index, dispatch, dxil, output)
         passes.append((index, constants_kind(index, dispatch), rule, len(bindings)))
@@ -270,7 +325,8 @@ def main():
     (out / "fsr4_passes.h").write_text(table)
     manifest = dict(capture_graph_sha256=json.loads((capture / "complete.json").read_text())["graph_sha256"],
                     original_graph_sha256=json.loads((original / "complete.json").read_text())["graph_sha256"],
-                    fp32_fma=args.fp32_fma, weights_sha256=sha(weights), table_sha256=sha(table.encode()),
+                    fp32_fma=args.fp32_fma, model_guards=bool(args.keep_model_guards),
+                    weights_sha256=sha(weights), table_sha256=sha(table.encode()),
                     converter_patch_sha256=sha((ROOT / "tools/dxil-spirv-fsr4-fp16.patch").read_bytes()),
                     passes=identities)
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
