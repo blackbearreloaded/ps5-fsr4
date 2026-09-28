@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import re
 import struct
@@ -299,16 +300,11 @@ PURE_INTEGER_OPS = {128, 130, 132, 194, 195, 196, 197, 199}
 LATENT_OFFSET = (fsr4_int8_kernels.BASES["RA"] + (fsr4_int8_kernels.LEVELS["H"][0] + 1) * 16) // 4
 
 
-def route_postpass_latent(code, latent_offset):
-    """Make the converted postpass read its learned head's result instead of computing it.
-
-    The head ends in four saturated, packed words (channels 4n..4n+3, clamped
-    with SClamp and bitcast to uint). The first scratch access reads the top-left
-    tap of the pixel's 3x3 neighbourhood; the generated head kernel wrote the
-    same pixel's latent `latent_offset` dwords further on. Each packed word
-    becomes a copy of that load, which leaves the whole head dead.
-    """
-    words = list(struct.unpack(f"<{len(code) // 4}I", code))
+def postpass_head(words):
+    """Landmarks of the converted postpass's learned head: instruction order, definitions and
+    their blocks, the scratch variable, its first access chain (the pixel's top-left tap) and
+    the four packed words the head ends in (channels 4n..4n+3, clamped with SClamp and
+    bitcast to uint), in channel order."""
     sets, bindings, defs, blocks, first_function, glsl, block = {}, {}, {}, {}, None, None, None
     order = []
     for i, op, count in instructions(words):
@@ -343,6 +339,25 @@ def route_postpass_latent(code, latent_offset):
         if len(bitcast) != 1 or words[bitcast[0] + 1] != uint:
             raise SystemExit("postpass: the head's packed latent words are not where expected")
         packed.append(bitcast[0])
+    if len({blocks[words[i + 2]] for i in packed}) != 1:
+        raise SystemExit("postpass: the packed latent words are made in different blocks")
+    return dict(defs=defs, blocks=blocks, first_function=first_function, scratch=scratch, chain=chain,
+                pointer_type=pointer_type, zero=zero, tap=tap, uint=uint, packed=packed)
+
+
+def route_postpass_latent(code, latent_offset):
+    """Make the converted postpass read its learned head's result instead of computing it.
+
+    The first scratch access reads the top-left tap of the pixel's 3x3 neighbourhood; the
+    generated head kernel wrote the same pixel's latent `latent_offset` dwords further on.
+    Each of the head's packed words becomes a copy of that load, which leaves the whole head
+    dead.
+    """
+    words = list(struct.unpack(f"<{len(code) // 4}I", code))
+    head = postpass_head(words)
+    defs, blocks, first_function, scratch, uint, packed = (head[k] for k in (
+        "defs", "blocks", "first_function", "scratch", "uint", "packed"))
+    pointer_type, zero, tap = head["pointer_type"], head["zero"], head["tap"]
     constants = {}
     for i, op, count in instructions(words):
         if op == OP_CONSTANT and count == 4 and words[i + 1] == uint:
@@ -382,8 +397,6 @@ def route_postpass_latent(code, latent_offset):
         loads += [(6 << 16) | OP_ACCESS_CHAIN, pointer_type, pointer, scratch, zero, index,
                   (4 << 16) | OP_LOAD, uint, value, pointer]
         latent.append(value)
-    if len({blocks[words[i + 2]] for i in packed}) != 1:
-        raise SystemExit("postpass: the packed latent words are made in different blocks")
     result = words[:5]
     for i, op, count in instructions(words):
         if i == first_function:
@@ -395,6 +408,179 @@ def route_postpass_latent(code, latent_offset):
         else:
             result += words[i:i + count]
     return struct.pack(f"<{len(result)}I", *result)
+
+
+OP_ENTRY_POINT, OP_EXECUTION_MODE, OP_TYPE_VECTOR, OP_TYPE_FUNCTION = 15, 16, 23, 33
+OP_FUNCTION_PARAMETER, OP_FUNCTION_END, OP_FUNCTION_CALL, OP_IMUL = 55, 56, 57, 132
+OP_TYPE_POINTER, OP_VARIABLE, OP_STORE, STORAGE_FUNCTION, BUILTIN_WORKGROUP_SIZE = 32, 59, 62, 7, 25
+OP_UGREATER_THAN_EQUAL, OP_SHIFT_RIGHT_LOGICAL, OP_SHIFT_LEFT_LOGICAL, OP_EXECUTION_MODE_ID = 174, 194, 196, 331
+CAPABILITY_LINKAGE, DECORATION_LINKAGE_ATTRIBUTES, LINKAGE_EXPORT, LINKAGE_IMPORT = 5, 41, 0, 1
+
+
+def spirv_string(text):
+    data = text.encode() + b"\0"
+    data += b"\0" * (-len(data) % 4)
+    return list(struct.unpack(f"<{len(data) // 4}I", data))
+
+
+def read_string(words):
+    data = struct.pack(f"<{len(words)}I", *words)
+    return data[:data.index(b"\0")].decode()
+
+
+def add_linkage(words, target, name, linkage_type):
+    """Words with the Linkage capability and target's LinkageAttributes declared, after the
+    module's last capability and last decoration."""
+    capabilities = [i for i, op, _ in instructions(words) if op == OP_CAPABILITY]
+    first_function = next(i for i, op, _ in instructions(words) if op == OP_FUNCTION)
+    annotations = [i for i, op, _ in instructions(words) if op in (OP_DECORATE, OP_MEMBER_DECORATE) and i < first_function]
+    decoration = [target, DECORATION_LINKAGE_ATTRIBUTES] + spirv_string(name) + [linkage_type]
+    result = words[:5]
+    for i, op, count in instructions(words):
+        result += words[i:i + count]
+        if i == capabilities[-1]:
+            result += [(2 << 16) | OP_CAPABILITY, CAPABILITY_LINKAGE]
+        if i == annotations[-1]:
+            result += [((len(decoration) + 1) << 16) | OP_DECORATE] + decoration
+    return result
+
+
+def call_postpass_head(code, name):
+    """Make the converted postpass take its learned head's four packed words from an imported
+    function `name`(x, y, ext_x, ext_y) returning a uvec4, which leaves the FP32 head dead.
+
+    The first scratch access reads the pixel's top-left tap at dword (962 * 16 * y + 16 * x) / 4
+    of H pixel (x, y), the tap's -1 offset and the tensor's +1 border cancelling; the head runs
+    only where x < ext_x and y < ext_y, the current H extent.
+    """
+    words = list(struct.unpack(f"<{len(code) // 4}I", code))
+    head = postpass_head(words)
+    defs, uint = head["defs"], head["uint"]
+    constants = {words[i + 2] for i, op, _ in instructions(words) if op == OP_CONSTANT}
+
+    def producer(ident, opcode):
+        i = defs.get(ident)
+        if i is None or words[i] & 0xffff != opcode:
+            raise SystemExit(f"postpass: unexpected code before the head's top-left tap (%{ident})")
+        return i
+
+    add = producer(words[producer(words[head["chain"] + 5], OP_SHIFT_RIGHT_LOGICAL) + 3], OP_IADD)
+    x = y = None
+    for operand in words[add + 3:add + 5]:
+        i = defs.get(operand)
+        if i is not None and words[i] & 0xffff == OP_IMUL:
+            y = next((o for o in words[i + 3:i + 5] if o not in constants), None)
+        elif i is not None and words[i] & 0xffff == OP_SHIFT_LEFT_LOGICAL:
+            x = words[i + 3]
+    extent = {}
+    for i, op, _ in instructions(words):
+        if op == OP_UGREATER_THAN_EQUAL and words[i + 3] in (x, y):
+            extent.setdefault(words[i + 3], words[i + 4])
+    if x is None or y is None or set(extent) != {x, y}:
+        raise SystemExit("postpass: the head's pixel coordinates or extent check were not found")
+    uvec4 = next(words[i + 1] for i, op, _ in instructions(words)
+                 if op == OP_TYPE_VECTOR and words[i + 2] == uint and words[i + 3] == 4)
+    # glslang passes GLSL in-parameters as pointers to function-local copies: so does the call.
+    pointer = next((words[i + 1] for i, op, _ in instructions(words)
+                    if op == OP_TYPE_POINTER and words[i + 2] == STORAGE_FUNCTION and words[i + 3] == uint), None)
+    new_pointer = pointer is None
+    if new_pointer:
+        pointer, words[3] = words[3], words[3] + 1
+    function_type, function, call = words[3], words[3] + 1, words[3] + 2
+    params, local = list(range(words[3] + 3, words[3] + 7)), list(range(words[3] + 7, words[3] + 11))
+    words[3] += 11
+    entry_label = next(i for i, op, _ in instructions(words) if op == OP_LABEL and i > head["first_function"])
+    arguments = (x, y, extent[x], extent[y])
+    result = words[:5]
+    for i, op, count in instructions(words):
+        if i == head["first_function"]:
+            if new_pointer:
+                result += [(4 << 16) | OP_TYPE_POINTER, pointer, STORAGE_FUNCTION, uint]
+            result += [(7 << 16) | OP_TYPE_FUNCTION, function_type, uvec4] + [pointer] * 4
+            result += [(5 << 16) | OP_FUNCTION, uvec4, function, 0, function_type]
+            for p in params:
+                result += [(3 << 16) | OP_FUNCTION_PARAMETER, pointer, p]
+            result += [(1 << 16) | OP_FUNCTION_END]
+        if i == min(head["packed"]):
+            for variable, value in zip(local, arguments):
+                result += [(3 << 16) | OP_STORE, variable, value]
+            result += [(8 << 16) | OP_FUNCTION_CALL, uvec4, call, function] + local
+        if i in head["packed"]:
+            result += [(5 << 16) | OP_COMPOSITE_EXTRACT, uint, words[i + 2], call, head["packed"].index(i)]
+        else:
+            result += words[i:i + count]
+        if i == entry_label:
+            for variable in local:
+                result += [(4 << 16) | OP_VARIABLE, pointer, variable, STORAGE_FUNCTION]
+    result = add_linkage(result, function, name, LINKAGE_IMPORT)
+    return struct.pack(f"<{len(result)}I", *result)
+
+
+def export_function(code, name):
+    """The compiled head as a library exporting `name` (glslang names it `name(...`): its stub
+    entry point, main and their execution modes dropped, Linkage declared."""
+    words = list(struct.unpack(f"<{len(code) // 4}I", code))
+    names = {words[i + 1]: read_string(words[i + 2:i + count]) for i, op, count in instructions(words) if op == OP_NAME}
+    main = next(words[i + 2] for i, op, _ in instructions(words) if op == OP_ENTRY_POINT)
+    function = next(ident for ident, text in names.items() if text.startswith(name + "("))
+    stub, in_main = {main}, False  # ids the stub main defines, whose names and decorations go with it
+    for i, op, count in instructions(words):
+        in_main = in_main or (op == OP_FUNCTION and words[i + 2] == main)
+        if in_main and count >= 3 and op not in (OP_STORE, OP_FUNCTION_END):
+            stub.add(words[i + 2] if op != OP_LABEL else words[i + 1])
+        in_main = in_main and op != OP_FUNCTION_END
+    result, in_main = words[:5], False
+    for i, op, count in instructions(words):
+        # A WorkgroupSize built-in would override the linking module's LocalSize.
+        if op in (OP_ENTRY_POINT, OP_EXECUTION_MODE, OP_EXECUTION_MODE_ID) or \
+                (op in (OP_NAME, OP_DECORATE, OP_MEMBER_NAME) and words[i + 1] in stub) or \
+                (op == OP_DECORATE and words[i + 2] == DECORATION_BUILTIN and words[i + 3] == BUILTIN_WORKGROUP_SIZE):
+            continue
+        if op == OP_FUNCTION and words[i + 2] == main:
+            in_main = True
+        if in_main:
+            in_main = op != OP_FUNCTION_END
+            continue
+        result += words[i:i + count]
+    result = add_linkage(result, function, name, LINKAGE_EXPORT)
+    return struct.pack(f"<{len(result)}I", *result)
+
+
+def drop_linkage(code):
+    words = list(struct.unpack(f"<{len(code) // 4}I", code))
+    result = words[:5]
+    for i, op, count in instructions(words):
+        if not ((op == OP_CAPABILITY and words[i + 1] == CAPABILITY_LINKAGE) or
+                (op == OP_DECORATE and words[i + 2] == DECORATION_LINKAGE_ATTRIBUTES)):
+            result += words[i:i + count]
+    return struct.pack(f"<{len(result)}I", *result)
+
+
+def fuse_postpass_head(code, model, scratch, out):
+    """The converted postpass with its FP32 learned head replaced by the generated INT8 head,
+    linked in as a function; returns validated SPIR-V whose FP32 head is gone."""
+    spv, head_glsl, head_spv, linked = (out / "pass27.spv", out / "posthead-function.comp",
+                                        out / "posthead-function.spv", out / "pass27-linked.spv")
+    spv.write_bytes(call_postpass_head(code, fsr4_int8_kernels.POSTHEAD_FUNCTION))
+    source, groups = fsr4_int8_kernels.posthead_function(model, scratch)
+    head_glsl.write_text(source)
+    # SPIR-V 1.3 like the converted shaders, so the linked module keeps their version.
+    subprocess.run([str(TOOLCHAIN_BIN / "glslangValidator"), "--target-env", "vulkan1.1", "-o", str(head_spv),
+                    str(head_glsl)], check=True, stdout=subprocess.DEVNULL)
+    head_spv.write_bytes(export_function(head_spv.read_bytes(), fsr4_int8_kernels.POSTHEAD_FUNCTION))
+    link = shutil.which("spirv-link")
+    if not link:
+        raise SystemExit("--int8-postpass-head needs spirv-link (SPIRV-Tools) on PATH")
+    subprocess.run([link, "--target-env", "vulkan1.1", str(spv), str(head_spv), "-o", str(linked)], check=True)
+    spv.write_bytes(drop_linkage(linked.read_bytes()))
+    code = strip_dead_code(spv, False)  # inlines the head
+    spv.write_bytes(remove_dead_code(code))
+    code = strip_dead_code(spv, False)
+    if any(op == OP_EXT_INST and w[i + 4] == GLSL_SCLAMP
+           for w in [struct.unpack(f"<{len(code) // 4}I", code)] for i, op, _ in instructions(w)):
+        raise SystemExit("postpass: the FP32 learned head survived dead-code removal")
+    print(f"pass 27: learned head replaced by the generated INT8 head, {groups} i16 groups", file=sys.stderr)
+    return code
 
 
 # Side-effect-free instructions with a result: loads and access chains, conversions,
@@ -523,6 +709,9 @@ def main():
     parser.add_argument("--int8-banks", default="",
                         help="dispatch:banks pairs, e.g. 13:4: that generated kernel splits its outputs "
                              "over as many workgroup layers")
+    parser.add_argument("--int8-postpass-head", action=argparse.BooleanOptionalAction, default=True,
+                        help="Link the generated INT8 learned head into the converted postpass in place "
+                             "of its FP32 head (needs spirv-link; off when dispatch 26 is generated)")
     parser.add_argument("--wave64", default=",".join(map(str, WAVE64_DEFAULT)),
                         help="Comma-separated dispatch indices compiled as wave64 where the driver offers it "
                              "(the rest run as wave32)")
@@ -545,6 +734,8 @@ def main():
                          f"or banks given for looped ones {sorted(looped & set(banked))}")
     if generated - set(fsr4_int8_kernels.PASSES):
         raise SystemExit(f"no generated kernel for dispatch {sorted(generated - set(fsr4_int8_kernels.PASSES))}")
+    # A generated dispatch 26 computes the head separately; the postpass then reads its latent.
+    args.int8_postpass_head = args.int8_postpass_head and fsr4_int8_kernels.POSTHEAD not in generated
     capture, original = args.capture.resolve(), args.original.resolve()
     graph = load_capture(capture, json.loads((capture / "complete.json").read_text())["graph_sha256"])
     old = load_capture(original, json.loads((original / "complete.json").read_text())["graph_sha256"])
@@ -591,6 +782,9 @@ def main():
             if any(op == OP_EXT_INST and w[i + 4] == GLSL_SCLAMP
                    for w in [struct.unpack(f"<{len(code) // 4}I", code)] for i, op, _ in instructions(w)):
                 raise SystemExit("postpass: the learned head survived dead-code removal")
+        elif index == fsr4_int8_kernels.POSTPASS and args.int8_postpass_head:
+            scratch = next((s, b) for s, b, _, role in bindings if role == "SCRATCH")
+            code = fuse_postpass_head(code, weights, scratch, out)
         emit_code(header, index, code, bindings)
         rule = group_rule(index, dispatch, dxil, output)
         if index == fsr4_int8_kernels.POSTHEAD and index in generated:
@@ -646,7 +840,7 @@ def main():
                     original_graph_sha256=json.loads((original / "complete.json").read_text())["graph_sha256"],
                     fp32_fma=args.fp32_fma, model_guards=bool(args.keep_model_guards),
                     int8_kernels=sorted(generated), int8_loops=sorted(looped), weight_table_words=len(tables),
-                    wave64=sorted(wave64),
+                    wave64=sorted(wave64), int8_postpass_head=args.int8_postpass_head,
                     int8_banks={str(k): v for k, v in sorted(banked.items())},
                     weights_sha256=sha(weights), table_sha256=sha(table.encode()),
                     converter_patch_sha256=sha((ROOT / "tools/dxil-spirv-fsr4-fp16.patch").read_bytes()),

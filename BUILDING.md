@@ -2,7 +2,9 @@
 
 ## Requirements
 
-- Linux (WSL works) with Python 3.11+, CMake, Ninja and a C compiler.
+- Linux (WSL works) with Python 3.11+, CMake, Ninja, a C compiler and
+  `spirv-link` from SPIRV-Tools (the pass tables link the generated postpass
+  head into the converted postpass).
 - The payload SDK and native app template the driver's SDK builder uses: set
   `PS5_PAYLOAD_SDK` and `PS5_NATIVE_APP_TEMPLATE` as described in
   [the driver's build notes](external/ps5-vulkan/BUILDING.md).
@@ -48,9 +50,12 @@ available. `--int8-loops` takes the dispatch indices generated in loop form by
 stream their weight pairs from a table after the model; its default is 13, 15,
 17, 19 and 23. All of them produce byte-identical output and bake the model's
 weights, so the generated sources stay in the build tree like the converted
-shaders; empty values keep every converted shader. `--wave64` lists the
-dispatches compiled as wave64 (default 13-23, the odd ones: network passes
-6-11); the tables header carries the set to the runtime.
+shaders; empty values keep every converted shader. The postpass's own learned
+head is replaced by the generated INT8 head as well: it is compiled as a
+function and linked into the converted postpass (`--no-int8-postpass-head`
+keeps the FP32 head). `--wave64` lists the dispatches compiled as wave64
+(default 13-23, the odd ones: network passes 6-11); the tables header carries
+the set to the runtime.
 
 ## Native FSR4 applications
 

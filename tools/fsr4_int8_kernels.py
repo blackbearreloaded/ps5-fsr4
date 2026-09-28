@@ -111,11 +111,20 @@ class Kernel:
         return f"{prefix}{self.counter}"
 
     def source(self, bindings):
+        return "\n".join(self.preamble(bindings, 64) + ["void main() {"] + self.lines + ["}"]) + "\n"
+
+    def function_source(self, bindings, signature, call):
+        """GLSL of the body as function `signature`, with a main that only calls it so that it
+        survives compilation (linking into another module drops that entry point)."""
+        return "\n".join(self.preamble(bindings, 1) + [f"{signature} {{"] + self.lines +
+                         ["}", "void main() {", f"  {call}", "}"]) + "\n"
+
+    def preamble(self, bindings, local_size):
         head = ["#version 460",
                 "#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require",
                 "#extension GL_EXT_control_flow_attributes : require",
                 f"// {self.name}: generated from the local model, do not distribute",
-                "layout(local_size_x = 64) in;"]
+                f"layout(local_size_x = {local_size}) in;"]
         for set_index, binding, kind in bindings:
             if kind == "model":
                 head.append(f"layout(set = {set_index}, binding = {binding}) readonly restrict buffer Model "
@@ -133,8 +142,8 @@ class Kernel:
                  "}",
                  "uint pack4(int a, int b, int c, int d) {",
                  "  return (uint(a) & 0xffu) | ((uint(b) & 0xffu) << 8) | ((uint(c) & 0xffu) << 16) | (uint(d) << 24);",
-                 "}", "void main() {"]
-        return "\n".join(head + self.lines + ["}"]) + "\n"
+                 "}"]
+        return head
 
     # Scratch access, in 16-byte units.
     def tensor_index(self, base, level, x, y):
@@ -336,7 +345,7 @@ def residual_prefix(k, model, spec, packed=False, block=None, done=None):
     w0 = signed_bytes(model, spec["spatial"][0], 9 * spatial * 16)
     b0 = int32s(model, spec["spatial"][1], spatial)
     if "pad_row" in spec:  # taps outside the current extent read zero instead of a cleared border
-        k.emit(f"uvec2 pad_extent = tensor_rows[{spec['pad_row']}].xy;")
+        k.emit(f"uvec2 pad_extent = {spec.get('pad_extent') or 'tensor_rows[%d].xy' % spec['pad_row']};")
     learned = []
     for g in range(spatial // 16):  # each spatial group reads only its own bank of the neighbourhood
         inputs = []
@@ -412,13 +421,32 @@ POSTHEAD, POSTPASS = 26, 27
 # Unrolled, passes 6-9 and 11 are bound by instruction fetch (their literal-heavy packed
 # code is larger than the FP32 originals, whose ~230 distinct weights stay in SGPRs, or,
 # for pass 11, than the instruction cache), so they run in loop form by default
-# (3.30 -> 3.05 ms with wave64). Splitting out the postpass head is exact but only moves
-# its cost.
+# (3.30 -> 3.05 ms with wave64). The postpass head runs best inside the postpass, whose
+# image loads it keeps busy: linked in as a function (posthead_function, 3.05 -> 2.90 ms),
+# not split out into dispatch 26 (3.03 ms).
 DEFAULT = (3, 5, 9, 11, 21, 23, 25)
 # Passes with a loop form (fsr4_int8_loops): all but the posthead, whose taps check the extent.
 LOOPED = tuple(index for index, spec in PASSES.items() if "pad_row" not in spec)
 DEFAULT_LOOPS = (13, 15, 17, 19, 23)
 BINDINGS = {"WEIGHTS": "model", "SCRATCH": "scratch", "CONSTANTS": "tensor"}
+
+
+POSTHEAD_FUNCTION = "fsr4_posthead"
+
+
+def posthead_function(model, scratch_binding):
+    """GLSL source of the postpass head as `uvec4 fsr4_posthead(uint x, uint y, uint ext_x,
+    uint ext_y)`: the latent's four packed words for H pixel (x, y), taps outside the current
+    H extent reading zero. It is linked into the converted postpass in place of its FP32 head
+    (build_fsr4_runtime.fuse_postpass_head); `scratch_binding` is (set, binding)."""
+    spec = dict(PASSES[POSTHEAD], table=None, banks=None, pad_extent="uvec2(ext_x, ext_y)")
+    k = Kernel(spec["name"] + " function")
+    out = residual_prefix(k, model, spec)
+    words = [f"pack4({', '.join(out[i:i + 4])})" for i in range(0, 16, 4)]
+    k.emit(f"return uvec4({', '.join(words)});")
+    signature = f"uvec4 {POSTHEAD_FUNCTION}(uint x, uint y, uint ext_x, uint ext_y)"
+    call = f"scratch[0] = {POSTHEAD_FUNCTION}(0u, 0u, 0u, 0u);"
+    return k.function_source([(scratch_binding[0], scratch_binding[1], "scratch")], signature, call), k.groups
 
 
 def generate(index, model, bindings, table=None, banks=None, looped=False):
