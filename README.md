@@ -23,8 +23,8 @@ The imported Vulkan code is copyright its original authors. This project is
 maintained by BlackBearReloaded and is independent of the upstream project.
 
 **Status:** Experimental. Captured FSR4 graphs execute natively, but image
-correctness and temporal stability remain unresolved. The reusable FSR SDK,
-OpenGL example and target-resolution performance are still under development.
+correctness and temporal stability remain unresolved. The reusable FSR SDK
+and target-resolution performance are still under development.
 
 ## Development
 

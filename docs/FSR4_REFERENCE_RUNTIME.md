@@ -30,4 +30,4 @@ Deploy the complete PPSA88900 folder via FTP to the locally configured,
 authorized console. Keep all captures, readbacks and logs local.
 
 Captured replay is a diagnostic; it does not supply the reusable SDK runtime,
-OpenGL presentation or performance qualification.
+presentation or performance qualification.

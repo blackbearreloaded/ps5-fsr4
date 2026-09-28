@@ -1,17 +1,19 @@
 # PS5 FSR4 implementation plan
 
 Build a native FSR 4.1.1 INT8 model-2 SDK using the imported ps5-vulkan driver.
-Use ps5-opengl for the graphical example and the native app boilerplate for
-title PPSA88900. This remains experimental and incomplete.
+Use the native app boilerplate for title PPSA88900. This remains experimental
+and incomplete.
 
 ## Initial scope
 
 - Base PS5; fixed 1280x720 input and 1920x1080 output; SDR first.
-- One GL context, Vulkan device/queue, view, history context and frame in flight.
+- One Vulkan device/queue, view, history context and frame in flight.
 - Linear scene color before UI/display encoding, depth, camera/object motion,
   jitter, exposure, frame time and explicit history reset.
 - Real FSR4 preparation, inference and reconstruction; no silent FSR2/3 fallback.
 - Frame generation, HDR, dynamic resolution and engine plugins are outside the initial scope.
+- FSR4 has no OpenGL backend. An OpenGL renderer would have to share its images
+  with Vulkan and synchronize explicitly in one title; that is not planned.
 
 ## SDK contract
 
@@ -41,17 +43,16 @@ models, dimensions, formats and resource combinations.
 5. Validate first-frame, steady history, motion, disocclusion and camera cuts
    against a repeatable reference. Establish numerical criteria independently
    of failures; do not relax thresholds simply to pass.
-6. Build the native OpenGL example with offscreen color/depth/motion, previous
-   transforms, jitter, explicit GL/Vulkan resource handoff and one presenter.
-   Check allocation ownership, format/pitch/tiling, bounds, completion and state leakage.
-   A staging bridge may aid debugging but does not qualify real-time sharing.
+6. Build a native interactive Vulkan example with offscreen color/depth/motion,
+   previous transforms, jitter and one presenter. Check allocation ownership,
+   format/pitch/tiling, bounds, completion and state leakage.
 7. Qualify the full temporal workload at the target resolution. Measure warmed
    GPU timings, memory, synchronization and transfer costs before optimization.
 8. Package libps5_fsr4.a, public headers, model/shader assets, build instructions,
    licenses and native examples. Verify a fresh build, relocated installation
    and independent C/C++ consumers.
 
-Completion requires correct temporal FSR4, an interactive OpenGL native example,
+Completion requires correct temporal FSR4, an interactive native example,
 clean teardown, target-resolution validation and a usable SDK package.
 A captured replay, shader compilation or screenshot alone is insufficient.
 
