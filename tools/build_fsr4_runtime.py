@@ -470,24 +470,25 @@ def strip_dead_code(spv, guard_removed):
     return code
 
 
-def generate_kernel(index, model, bindings, out, tables=None, banks=None):
+def generate_kernel(index, model, bindings, out, tables, use_table=False, banks=None, looped=False):
     """Packed-i16 kernel for dispatch `index`, compiled to validated SPIR-V; returns its words.
 
-    With `tables` (the weight-pair words already placed after the model), a kernel that
-    binds the model reads its weight pairs from a table appended there. `banks` splits its
-    outputs over that many workgroup layers."""
+    With `use_table`, a kernel that binds the model reads its weight pairs from a table
+    appended after it to `tables` (the words already placed there). `banks` splits its
+    outputs over that many workgroup layers; `looped` generates the loop form, which
+    always streams its weights from a table."""
     table = None
-    if tables is not None and any(role == "WEIGHTS" for _, _, _, role in bindings):
+    if (use_table or looped) and any(role == "WEIGHTS" for _, _, _, role in bindings):
         table = (len(model) + 3) // 4 + len(tables)
-    source, groups, pairs = fsr4_int8_kernels.generate(index, model, bindings, table, banks)
-    if tables is not None:
-        tables += pairs
+    source, groups, pairs = fsr4_int8_kernels.generate(index, model, bindings, table, banks, looped)
+    tables += pairs
     glsl, spv = out / f"pass{index}.comp", out / f"pass{index}.spv"
     glsl.write_text(source)
     subprocess.run([str(TOOLCHAIN_BIN / "glslangValidator"), "--target-env", "vulkan1.3", "-o", str(spv), str(glsl)],
                    check=True, stdout=subprocess.DEVNULL)
     subprocess.run([str(TOOLCHAIN_BIN / "spirv-val"), "--target-env", "vulkan1.3", str(spv)], check=True)
-    print(f"pass {index}: generated packed-i16 kernel, {groups} i16 groups", file=sys.stderr)
+    print(f"pass {index}: generated packed-i16 kernel{' (looped)' if looped else ''}, {groups} i16 groups",
+          file=sys.stderr)
     return spv.read_bytes()
 
 
@@ -518,12 +519,20 @@ def main():
     parser.add_argument("--int8-banks", default="",
                         help="dispatch:banks pairs, e.g. 13:4: that generated kernel splits its outputs "
                              "over as many workgroup layers")
+    parser.add_argument("--int8-loops", default=",".join(map(str, fsr4_int8_kernels.DEFAULT_LOOPS)),
+                        help="Comma-separated dispatch indices generated in loop form, weights streamed "
+                             f"from a table (available: {list(fsr4_int8_kernels.LOOPED)}; an empty value "
+                             "generates none)")
     args = parser.parse_args()
-    generated = {int(i) for i in args.int8_kernels.split(",") if i}
-    tables = [] if args.weight_tables else None
+    looped = {int(i) for i in args.int8_loops.split(",") if i}
+    generated = {int(i) for i in args.int8_kernels.split(",") if i} | looped
+    tables = []
     banked = {int(k): int(v) for k, v in (item.split(":") for item in args.int8_banks.split(",") if item)}
     if set(banked) - generated:
         raise SystemExit(f"banks given for dispatches that are not generated: {sorted(set(banked) - generated)}")
+    if looped - set(fsr4_int8_kernels.LOOPED) or looped & set(banked):
+        raise SystemExit(f"no loop form for dispatches {sorted(looped - set(fsr4_int8_kernels.LOOPED))}, "
+                         f"or banks given for looped ones {sorted(looped & set(banked))}")
     if generated - set(fsr4_int8_kernels.PASSES):
         raise SystemExit(f"no generated kernel for dispatch {sorted(generated - set(fsr4_int8_kernels.PASSES))}")
     capture, original = args.capture.resolve(), args.original.resolve()
@@ -563,7 +572,8 @@ def main():
         if index in generated:
             if weights is None:
                 raise ValueError("Model initializers are needed before pass %d" % index)
-            code = generate_kernel(index, weights, bindings, out, tables, banked.get(index))
+            code = generate_kernel(index, weights, bindings, out, tables, args.weight_tables, banked.get(index),
+                                   index in looped)
         if index == fsr4_int8_kernels.POSTPASS and fsr4_int8_kernels.POSTHEAD in generated:
             spv = out / f"pass{index}.spv"
             spv.write_bytes(remove_dead_code(route_postpass_latent(code, LATENT_OFFSET)))
@@ -615,7 +625,7 @@ def main():
                                spirv_sha256=sha(code), constants="RCAS", bindings=bindings,
                                groups=("RCAS", 0, 0, 0), reference_groups=dispatch["dispatchDimension"]))
     # The model, then the generated kernels' weight-pair tables: all uploaded to the model buffer.
-    padded = weights + b"\0" * (-len(weights) % 4) + struct.pack(f"<{len(tables or [])}I", *(tables or []))
+    padded = weights + b"\0" * (-len(weights) % 4) + struct.pack(f"<{len(tables)}I", *tables)
     header.append("static const uint32_t fsr4_weights[] = {" + ",".join(
         hex(w) for w in struct.unpack(f"<{len(padded) // 4}I", padded)) + "};")
     header.append(f"#define FSR4_WEIGHTS_BYTES {len(padded) if tables else len(weights)}u")
@@ -624,7 +634,7 @@ def main():
     manifest = dict(capture_graph_sha256=json.loads((capture / "complete.json").read_text())["graph_sha256"],
                     original_graph_sha256=json.loads((original / "complete.json").read_text())["graph_sha256"],
                     fp32_fma=args.fp32_fma, model_guards=bool(args.keep_model_guards),
-                    int8_kernels=sorted(generated), weight_table_words=len(tables or []),
+                    int8_kernels=sorted(generated), int8_loops=sorted(looped), weight_table_words=len(tables),
                     int8_banks={str(k): v for k, v in sorted(banked.items())},
                     weights_sha256=sha(weights), table_sha256=sha(table.encode()),
                     converter_patch_sha256=sha((ROOT / "tools/dxil-spirv-fsr4-fp16.patch").read_bytes()),
