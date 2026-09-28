@@ -46,7 +46,16 @@ struct ps5fsr4_context {
     struct fsr4_pipeline pipelines[FSR4_PASS_COUNT];
     int initialized;
     float previous_pre_exposure;
+    int wave64;                         /* subgroupSizeControl offers 64 for compute */
 };
+
+/* Passes measured faster as wave64 on the PS5 (1280x720 -> 1920x1080, GPU ms
+ * wave32 -> wave64): model passes 7, 8, 9 and 10 and the postpass (0.47->0.36,
+ * 0.50->0.35, 0.95->0.72, 0.47->0.37, 1.19->0.90). The others are as fast or
+ * faster as wave32; pass 4 measured 0.48 either way and pass 12 0.30->0.38.
+ * Their only subgroup operations are the model-weight check's all-true vote
+ * and lane index/count, so the size does not change results. */
+static const uint32_t fsr4_wave64_passes = (1u << 15) | (1u << 17) | (1u << 19) | (1u << 21) | (1u << 27);
 
 static const VkAllocationCallbacks *allocator(const ps5fsr4_context *c)
 {
@@ -176,6 +185,11 @@ static ps5fsr4_result create_pipeline(ps5fsr4_context *c, uint32_t index)
     if (vkCreateShaderModule(c->desc.device, &module_info, allocator(c), &module) != VK_SUCCESS)
         return PS5FSR4_ERROR_VULKAN;
     VkComputePipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo wave64 = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+        .requiredSubgroupSize = 64};
+    if (c->wave64 && (fsr4_wave64_passes & (1u << index)))
+        info.stage.pNext = &wave64;
     info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     info.stage.module = module;
@@ -243,7 +257,8 @@ static int valid_context_desc(const ps5fsr4_context_desc *d)
     return d && d->struct_size == sizeof(*d) && d->physical_device && d->device &&
            d->max_render_width && d->max_render_height && d->output_width && d->output_height &&
            d->max_render_width <= d->output_width && d->max_render_height <= d->output_height &&
-           !(d->flags & ~(uint32_t)(PS5FSR4_FLAG_HIGH_DYNAMIC_RANGE | PS5FSR4_FLAG_AUTO_EXPOSURE));
+           !(d->flags & ~(uint32_t)(PS5FSR4_FLAG_HIGH_DYNAMIC_RANGE | PS5FSR4_FLAG_AUTO_EXPOSURE |
+                                    PS5FSR4_FLAG_SUBGROUP_SIZE_CONTROL));
 }
 
 ps5fsr4_result ps5fsr4_get_memory_requirements(const ps5fsr4_context_desc *desc,
@@ -348,6 +363,14 @@ ps5fsr4_result ps5fsr4_context_create(const ps5fsr4_context_desc *desc, ps5fsr4_
     if (vkCreateDescriptorPool(desc->device, &pool, allocator(c), &c->pool) != VK_SUCCESS) {
         r = PS5FSR4_ERROR_VULKAN;
         goto fail;
+    }
+    if (desc->flags & PS5FSR4_FLAG_SUBGROUP_SIZE_CONTROL) {
+        VkPhysicalDeviceVulkan13Properties v13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+        VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                                  .pNext = &v13};
+        vkGetPhysicalDeviceProperties2(desc->physical_device, &properties);
+        c->wave64 = (v13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+                    v13.minSubgroupSize <= 64 && v13.maxSubgroupSize >= 64;
     }
     for (uint32_t i = 0; i < FSR4_PASS_COUNT; ++i) {
         if ((r = create_pipeline(c, i))) goto fail;

@@ -45,7 +45,11 @@ typedef enum ps5fsr4_flags {
     /* Color is high dynamic range (not tonemapped to [0,1]). */
     PS5FSR4_FLAG_HIGH_DYNAMIC_RANGE = 1u << 0,
     /* Compute exposure from the color input instead of using pre_exposure only. */
-    PS5FSR4_FLAG_AUTO_EXPOSURE = 1u << 1
+    PS5FSR4_FLAG_AUTO_EXPOSURE = 1u << 1,
+    /* The device was created with the Vulkan 1.3 subgroupSizeControl feature.
+     * Where it offers compute subgroups of 64, passes that run faster as
+     * wave64 on the PS5 require that size; results are unchanged. */
+    PS5FSR4_FLAG_SUBGROUP_SIZE_CONTROL = 1u << 2
 } ps5fsr4_flags;
 
 typedef struct ps5fsr4_context ps5fsr4_context;

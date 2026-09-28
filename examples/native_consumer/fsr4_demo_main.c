@@ -333,7 +333,14 @@ static int run(void)
                                   .pQueuePriorities = &priority};
     VkPhysicalDeviceFeatures features = {.shaderInt16 = VK_TRUE};
     const char *extension = VK_KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME;
-    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1,
+    /* Let FSR4 run each pass at its faster wave size where the driver offers it. */
+    VkPhysicalDeviceVulkan13Features offered = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 query = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &offered};
+    vkGetPhysicalDeviceFeatures2(physical, &query);
+    VkPhysicalDeviceVulkan13Features enable13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                                                 .subgroupSizeControl = offered.subgroupSizeControl};
+    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = offered.subgroupSizeControl ? &enable13 : NULL, .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &qi, .pEnabledFeatures = &features, .enabledExtensionCount = 1,
         .ppEnabledExtensionNames = &extension};
     CHECK(vkCreateDevice(physical, &di, NULL, &device));
@@ -422,7 +429,9 @@ static int run(void)
     vkUpdateDescriptorSets(device, 1, &sw, 0, NULL);
 
     ps5fsr4_context_desc cd = {sizeof(cd), physical, device, RENDER_W, RENDER_H, OUTPUT_W, OUTPUT_H,
-                               PS5FSR4_FLAG_HIGH_DYNAMIC_RANGE | PS5FSR4_FLAG_AUTO_EXPOSURE, NULL, pipeline_cache};
+                               PS5FSR4_FLAG_HIGH_DYNAMIC_RANGE | PS5FSR4_FLAG_AUTO_EXPOSURE |
+                               (offered.subgroupSizeControl ? PS5FSR4_FLAG_SUBGROUP_SIZE_CONTROL : 0u),
+                               NULL, pipeline_cache};
     ps5fsr4_context *context;
     ps5fsr4_result fr = ps5fsr4_context_create(&cd, &context);
     report("FSR4_DEMO_CONTEXT result=%d create_ms=%.1f cache_in=%zu\n", (int)fr, now_ms() - t0, cache_bytes);

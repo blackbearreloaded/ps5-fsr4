@@ -160,6 +160,7 @@ static int run(void)
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     qi.queueCount = 1; qi.pQueuePriorities = &priority;
     VkPhysicalDeviceFeatures features = {0};
+    VkBool32 size_control = VK_FALSE;
 #ifndef FSR4_PS5VK_HOST  /* the host ps5vk validator build does not advertise it */
     features.shaderInt16 = VK_TRUE;
 #endif
@@ -167,6 +168,15 @@ static int run(void)
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &qi; di.pEnabledFeatures = &features;
     di.enabledExtensionCount = 1; di.ppEnabledExtensionNames = &extension;
+#ifndef FSR4_HOST  /* per-pass wave sizes where the driver offers them */
+    VkPhysicalDeviceVulkan13Features offered = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 query = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &offered};
+    vkGetPhysicalDeviceFeatures2(physical, &query);
+    VkPhysicalDeviceVulkan13Features enable13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                                                 .subgroupSizeControl = offered.subgroupSizeControl};
+    size_control = offered.subgroupSizeControl;
+    if (size_control) di.pNext = &enable13;
+#endif
 #if defined(FSR4_HOST) && !defined(FSR4_PS5VK_HOST)  /* conformant host drivers need the declared features */
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13};
@@ -175,6 +185,7 @@ static int run(void)
     vkGetPhysicalDeviceFeatures2(physical, &all);
     f13.robustImageAccess = VK_FALSE; all.features.robustBufferAccess = VK_FALSE;
     di.pNext = &all; di.pEnabledFeatures = NULL; di.enabledExtensionCount = 0;
+    size_control = f13.subgroupSizeControl;
 #endif
     CHECK(vkCreateDevice(physical, &di, NULL, &device));
     VkQueue queue;
@@ -229,7 +240,9 @@ static int run(void)
     VkPipelineCache pipeline_cache;
     CHECK(vkCreatePipelineCache(device, &pci, NULL, &pipeline_cache));
     free(cache_blob);
-    ps5fsr4_context_desc cd = {sizeof(cd), physical, device, rw, rh, ow, oh, FSR4_RT_FLAGS, NULL, pipeline_cache};
+    ps5fsr4_context_desc cd = {sizeof(cd), physical, device, rw, rh, ow, oh,
+                               FSR4_RT_FLAGS | (size_control ? PS5FSR4_FLAG_SUBGROUP_SIZE_CONTROL : 0u),
+                               NULL, pipeline_cache};
     ps5fsr4_context *context;
     double t0 = now_ms();
     ps5fsr4_result fr = ps5fsr4_context_create(&cd, &context);
