@@ -17,8 +17,8 @@ Group boundaries (where i16 lanes widen into i32 sums) are fixed in the body, so
 group is proven overflow-free for every iteration that runs it. The arithmetic is the
 unrolled kernels', so both produce the same bytes.
 """
-from fsr4_int8_kernels import (EXTENTS, I16_MAX, I16_MIN, Kernel, int32s, pair_channels, signed_bytes, skips,
-                               start, step, zero_border)
+from fsr4_int8_kernels import (I16_MAX, I16_MIN, Kernel, channel_shifts, int32s, pair_channels, signed_bytes,
+                               skips, start, step, zero_border)
 
 HIDDEN_PAIRS_PER_ITERATION = 4
 
@@ -197,7 +197,7 @@ def residual_prefix(k, model, spec):
 
 def residual_block(model, spec):
     """Looped residual block stored to scratch at its own level (passes 7 and 8)."""
-    k = Kernel(spec["name"], spec["table"])
+    k = Kernel(spec["name"], spec["table"], spec.get("layout"))
     level = spec["input"][1]
     start(k, level)
     zero_border(k, spec["output"])
@@ -212,7 +212,7 @@ def residual_block(model, spec):
 def residual_upsample(model, spec):
     """Looped residual block and 2x2 sub-pixel projection with a skip (pass 9): the
     projection loops over the four phases, each writing one position of the next level."""
-    k = Kernel(spec["name"], spec["table"])
+    k = Kernel(spec["name"], spec["table"], spec.get("layout"))
     start(k, spec["input"][1])
     zero_border(k, spec["output"], 2)
     prefix = pack_pairs(k, residual_prefix(k, model, spec))
@@ -221,7 +221,7 @@ def residual_upsample(model, spec):
     w = signed_bytes(model, offset, 4 * cout * cin)
     bias = int32s(model, bias_offset, cout)
     out_base, out_level = spec["output"]
-    width, height = EXTENTS[out_level]
+    width, height = k.layout["extents"][out_level]
 
     def row(phase, oc):
         return w[(phase * cout + oc) * cin:(phase * cout + oc + 1) * cin]
@@ -254,7 +254,7 @@ def down2x2(model, spec):
     cin, cout = spec["cin"], spec["cout"]
     w = signed_bytes(model, spec["weights"], 4 * cout * cin)
     bias = int32s(model, spec["bias"], cout)
-    k = Kernel(spec["name"], spec["table"])
+    k = Kernel(spec["name"], spec["table"], spec.get("layout"))
     start(k, spec["output"][1])
     zero_border(k, spec["output"])
 
@@ -272,7 +272,7 @@ def down2x2(model, spec):
         accumulate(k, stream, inputs, rows, group_iterations(rows, [(-128, 127)] * cin), (sums[o0], sums[o1]))
     k.emit("}")
     stream.close()
-    k.store_bytes(spec["output"][0], spec["output"][1], requantize(k, sums, [spec["shift"]] * cout), "x", "y")
+    k.store_bytes(spec["output"][0], spec["output"][1], requantize(k, sums, channel_shifts(spec["shift"], cout)), "x", "y")
     return k
 
 

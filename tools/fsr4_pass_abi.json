@@ -1,0 +1,324 @@
+{
+ "schema": "ps5-fsr4-pass-abi/1",
+ "note": "Descriptor bindings, constant blocks and dispatch rules of the SPD, model and RCAS dispatches, the same for every model and resolution band. PADDING rules name their CsTensorSizes row; their limits come from each shader. Taken from the reference captures.",
+ "passes": [
+  {
+   "index": 0,
+   "entry": "main",
+   "constants": "SPD",
+   "rule": ["SPD"],
+   "bindings": [
+    [0, 0, "SAMPLED_IMAGE", "COLOR"],
+    [1, 0, "STORAGE_IMAGE", "SPD_COUNTER"],
+    [1, 1, "STORAGE_IMAGE", "LUMA_MIP5"],
+    [1, 2, "STORAGE_IMAGE", "AUTO_EXPOSURE"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 1,
+   "entry": "fsr4_model_v07_fp8_no_scale_prepass",
+   "constants": "MLSR",
+   "rule": ["PREPASS"],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [0, 0, "SAMPLED_IMAGE", "HISTORY"],
+    [0, 1, "SAMPLED_IMAGE", "MOTION_VECTORS"],
+    [0, 2, "SAMPLED_IMAGE", "DEPTH"],
+    [0, 3, "SAMPLED_IMAGE", "COLOR"],
+    [0, 4, "SAMPLED_IMAGE", "RECURRENT"],
+    [0, 17, "SAMPLED_IMAGE", "AUTO_EXPOSURE"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [1, 3, "STORAGE_IMAGE", "HISTORY_REPROJECTED"],
+    [2, 1, "UNIFORM_BUFFER", "CONSTANTS"],
+    [3, 0, "SAMPLER", "SAMPLER"]
+   ]
+  },
+  {
+   "index": 2,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass0_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 0],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 3,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass1",
+   "constants": "TENSOR",
+   "rule": ["NETWORK", 1],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 4,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass1_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 2],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 5,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass2",
+   "constants": "TENSOR",
+   "rule": ["NETWORK", 1],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 6,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass2_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 3],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 7,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass3",
+   "constants": "NONE",
+   "rule": ["NETWORK", 2],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"]
+   ]
+  },
+  {
+   "index": 8,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass3_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 4],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 9,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass4",
+   "constants": "TENSOR",
+   "rule": ["NETWORK", 2],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 10,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass4_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 5],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 11,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass5",
+   "constants": "TENSOR",
+   "rule": ["NETWORK", 2],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 12,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass5_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 6],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 13,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass6",
+   "constants": "NONE",
+   "rule": ["NETWORK", 3],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"]
+   ]
+  },
+  {
+   "index": 14,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass6_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 7],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 15,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass7",
+   "constants": "NONE",
+   "rule": ["NETWORK", 3],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"]
+   ]
+  },
+  {
+   "index": 16,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass7_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 8],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 17,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass8",
+   "constants": "NONE",
+   "rule": ["NETWORK", 3],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"]
+   ]
+  },
+  {
+   "index": 18,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass8_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 9],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 19,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass9",
+   "constants": "TENSOR",
+   "rule": ["NETWORK", 3],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 20,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass9_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 10],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 21,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass10",
+   "constants": "TENSOR",
+   "rule": ["NETWORK", 2],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 22,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass10_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 11],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 23,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass11",
+   "constants": "TENSOR",
+   "rule": ["NETWORK", 2],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 24,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass11_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 12],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 25,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass12",
+   "constants": "TENSOR",
+   "rule": ["NETWORK", 1],
+   "bindings": [
+    [0, 18, "STORAGE_BUFFER", "WEIGHTS"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 26,
+   "entry": "fsr4_model_v07_fp8_no_scale_pass12_post",
+   "constants": "TENSOR",
+   "rule": ["PADDING", 13],
+   "bindings": [
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 27,
+   "entry": "fsr4_model_v07_fp8_no_scale_postpass",
+   "constants": "MLSR",
+   "rule": ["POSTPASS"],
+   "bindings": [
+    [0, 3, "SAMPLED_IMAGE", "COLOR"],
+    [0, 9, "SAMPLED_IMAGE", "HISTORY_REPROJECTED"],
+    [0, 17, "SAMPLED_IMAGE", "AUTO_EXPOSURE"],
+    [1, 11, "STORAGE_BUFFER", "SCRATCH"],
+    [1, 1, "STORAGE_IMAGE", "HISTORY"],
+    [1, 2, "STORAGE_IMAGE", "OUTPUT"],
+    [1, 6, "STORAGE_IMAGE", "RECURRENT"],
+    [2, 1, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  },
+  {
+   "index": 28,
+   "entry": "fsr_rcas_pass",
+   "constants": "RCAS",
+   "rule": ["RCAS"],
+   "bindings": [
+    [0, 17, "SAMPLED_IMAGE", "AUTO_EXPOSURE"],
+    [0, 18, "SAMPLED_IMAGE", "RCAS_INPUT"],
+    [1, 11, "STORAGE_IMAGE", "OUTPUT"],
+    [2, 0, "UNIFORM_BUFFER", "CONSTANTS"]
+   ]
+  }
+ ]
+}

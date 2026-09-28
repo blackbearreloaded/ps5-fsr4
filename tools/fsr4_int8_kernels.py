@@ -18,11 +18,18 @@ import struct
 
 I16_MIN, I16_MAX = -32768, 32767
 MAGIC = 12582912.0  # 1.5 * 2^23: FP32 values within 2^22 of it are spaced 1 apart
-# Band-0 scratch layout: padded tensor sizes (width, height) and base anchors, in bytes.
-LEVELS = {"H": (962, 542), "Q": (482, 272), "E": (242, 137)}
-BASES = {"R0": 0, "RA": 8_342_464, "RB": 12_537_792, "RC": 14_659_648}
-# Logical band-0 extents: invocations beyond them return, as in the converted passes.
-EXTENTS = {"H": (960, 540), "Q": (480, 270), "E": (240, 135)}
+# Scratch layouts of the resolution bands (band 0: outputs up to 1920x1080, band 1: up to
+# 3840x2160): padded tensor sizes (width, height), region bases in bytes, the largest
+# logical extents and the whole allocation.
+LAYOUTS = {
+    0: dict(levels={"H": (962, 542), "Q": (482, 272), "E": (242, 137)},
+            bases={"R0": 0, "RA": 8_342_464, "RB": 12_537_792, "RC": 14_659_648},
+            extents={"H": (960, 540), "Q": (480, 270), "E": (240, 135)}, scratch=20_880_256),
+    1: dict(levels={"H": (1922, 1082), "Q": (962, 542), "E": (482, 272)},
+            bases={"R0": 0, "RA": 33_273_664, "RB": 49_958_592, "RC": 58_349_248},
+            extents={"H": (1920, 1080), "Q": (960, 540), "E": (480, 270)}, scratch=83_232_256),
+}
+LEVELS, BASES, EXTENTS = (LAYOUTS[0][key] for key in ("levels", "bases", "extents"))
 # A CsTensorSizes row of each level: the current extent, output rounded up to eight and
 # halved per level. Kernels stop there and zero the border around it themselves.
 EXTENT_ROWS = {"H": 2, "Q": 4, "E": 7}
@@ -90,13 +97,14 @@ class Kernel:
     table's entries in the order the kernel reads them.
     """
 
-    def __init__(self, name, table=None):
+    def __init__(self, name, table=None, layout=None):
         self.name = name
         self.lines = []
         self.counter = 0
         self.groups = 0
         self.table = table
         self.pairs = []
+        self.layout = layout or LAYOUTS[0]
 
     def weight(self, w0, w1):
         """A weight pair: an inline constant when both halves are the same small value, else
@@ -152,11 +160,11 @@ class Kernel:
 
     # Scratch access, in 16-byte units.
     def tensor_index(self, base, level, x, y):
-        width, _ = LEVELS[level]
-        return f"{BASES[base] // 16}u + ({y} + 1u) * {width}u + {x} + 1u"
+        width, _ = self.layout["levels"][level]
+        return f"{self.layout['bases'][base] // 16}u + ({y} + 1u) * {width}u + {x} + 1u"
 
     def plane(self, level):
-        width, height = LEVELS[level]
+        width, height = self.layout["levels"][level]
         return width * height
 
     def load_bytes(self, base, level, channels, x, y):
@@ -255,7 +263,8 @@ def down2x2(model, spec):
     w = signed_bytes(model, spec["weights"], 4 * cout * cin)
     bias = int32s(model, spec["bias"], cout)
     rows = [[w[(t * cout + oc) * cin + ic] for t in range(4) for ic in range(cin)] for oc in range(cout)]
-    k = Kernel(spec["name"], spec.get("table"))
+    shifts = channel_shifts(spec["shift"], cout)
+    k = Kernel(spec["name"], spec.get("table"), spec.get("layout"))
     start(k, spec["output"][1])
     zero_border(k, spec["output"])
     inputs = []
@@ -264,7 +273,7 @@ def down2x2(model, spec):
             inputs += k.load_bytes(spec["input"][0], spec["input"][1], cin, f"(2u * x + {kx}u)", f"(2u * y + {ky}u)")
     banks = spec.get("banks")
     if not banks:
-        out = k.layer(inputs, [(-128, 127)] * len(inputs), rows, bias, [spec["shift"]] * cout)
+        out = k.layer(inputs, [(-128, 127)] * len(inputs), rows, bias, shifts)
         k.store_bytes(spec["output"][0], spec["output"][1], out, "x", "y")
         return k
     # One output bank per workgroup layer: a workgroup runs only its bank's code, so the
@@ -275,11 +284,16 @@ def down2x2(model, spec):
     for bank in range(banks):
         k.emit(f"{'if' if bank == 0 else '} else if'} (gl_WorkGroupID.z == {bank}u) {{")
         out = k.layer(inputs, [(-128, 127)] * len(inputs), rows[bank * per:(bank + 1) * per],
-                      bias[bank * per:(bank + 1) * per], [spec["shift"]] * per)
+                      bias[bank * per:(bank + 1) * per], shifts[bank * per:(bank + 1) * per])
         for part in range(per // 16):
             k.store_bank(target, spec["output"][1], bank * per // 16 + part, out[part * 16:(part + 1) * 16])
     k.emit("}")
     return k
+
+
+def channel_shifts(shift, channels):
+    """Per-channel requantization shifts from one shift or a list of them."""
+    return list(shift) if isinstance(shift, (list, tuple)) else [shift] * channels
 
 
 def start(k, level):
@@ -330,7 +344,7 @@ def skips(k, base, level, banks, x, y):
 
 def residual_block(model, spec):
     """Residual block stored to scratch at its own level (passes 1, 2, 4, 5, 7, 8, 10, 12)."""
-    k = Kernel(spec["name"], spec.get("table"))
+    k = Kernel(spec["name"], spec.get("table"), spec.get("layout"))
     level = spec["input"][1]
     start(k, level)
     zero_border(k, spec["output"])
@@ -344,7 +358,7 @@ def residual_block(model, spec):
 def residual_upsample(model, spec):
     """Residual block followed by a learned 2x2 sub-pixel projection with a skip (passes 9
     and 11): each invocation writes the four sub-pixel phases of its position."""
-    k = Kernel(spec["name"], spec.get("table"))
+    k = Kernel(spec["name"], spec.get("table"), spec.get("layout"))
     start(k, spec["input"][1])
     zero_border(k, spec["output"], 2)
     prefix = residual_prefix(k, model, spec, packed=True)
@@ -353,7 +367,7 @@ def residual_upsample(model, spec):
     w = signed_bytes(model, offset, 4 * cout * cin)
     bias = int32s(model, bias_offset, cout)
     out_base, out_level = spec["output"]
-    width, height = EXTENTS[out_level]
+    width, height = k.layout["extents"][out_level]
     for py in range(2):
         for px in range(2):
             qx, qy = f"(2u * x + {px}u)", f"(2u * y + {py}u)"
@@ -456,6 +470,27 @@ PASSES = {
 }
 # The postpass reads its latent at the RA position of its H pixel (see route_postpass_latent).
 POSTHEAD, POSTPASS = 26, 27
+# Ultra Performance (AMD mode 5) runs the same graph and model layout with its own weights;
+# its internal requantizations match the standard model's, but these final residual and
+# projection rules differ, and so do the two shifts of the postpass head.
+ULTRA_PERFORMANCE = {
+    3: dict(residual=([7] * 16, [64] * 16)),
+    5: dict(residual=([6] * 16, [64] * 16)),
+    7: dict(shift=[7] * 16 + [8] * 16),
+    9: dict(residual=([8] * 16 + [9] * 16, [256] * 16 + [512] * 16)),
+    21: dict(residual=([8] * 32, [256] * 32)),
+    23: dict(residual=([8] * 32, [256] * 32), up=(120832, 122880, 8, 256)),
+    26: dict(spatial=(126720, 129024, 7), expand=(129152, 129664, 8)),
+}
+MODELS = ("standard", "ultra-performance")
+
+
+def pass_spec(index, model_name="standard", band=0):
+    """Description of dispatch `index` for a model and resolution band."""
+    if model_name not in MODELS or band not in LAYOUTS:
+        raise ValueError(f"no generated kernels for model {model_name!r}, band {band}")
+    overrides = ULTRA_PERFORMANCE.get(index, {}) if model_name == "ultra-performance" else {}
+    return dict(PASSES[index], **overrides, layout=LAYOUTS[band])
 # Generated by default where the PS5 measured a gain (720p to 1080p demo, 3.46 -> 3.32 ms).
 # Unrolled, passes 6-9 and 11 are bound by instruction fetch (their literal-heavy packed
 # code is larger than the FP32 originals, whose ~230 distinct weights stay in SGPRs, or,
@@ -476,15 +511,15 @@ BINDINGS = {"WEIGHTS": "model", "SCRATCH": "scratch", "CONSTANTS": "tensor"}
 POSTHEAD_FUNCTION = "fsr4_posthead"
 
 
-def posthead_function(model, scratch_binding):
+def posthead_function(model, scratch_binding, model_name="standard", band=0):
     """GLSL source of the postpass head as `uvec4 fsr4_posthead(uint x, uint y, uint ext_x,
     uint ext_y)`: the latent's four packed words for H pixel (x, y). It is linked into the
     converted postpass in place of its FP32 head (build_fsr4_runtime.fuse_postpass_head);
     `scratch_binding` is (set, binding). Taps outside (ext_x, ext_y), the postpass's own
     extent, read zero: the cleared border cannot stand in for that check, because the
     tensor extent is rounded up to 8 and can reach beyond it."""
-    spec = dict(PASSES[POSTHEAD], table=None, banks=None, pad_extent="uvec2(ext_x, ext_y)")
-    k = Kernel(spec["name"] + " function")
+    spec = dict(pass_spec(POSTHEAD, model_name, band), table=None, banks=None, pad_extent="uvec2(ext_x, ext_y)")
+    k = Kernel(spec["name"] + " function", layout=spec["layout"])
     out = residual_prefix(k, model, spec)
     words = [f"pack4({', '.join(out[i:i + 4])})" for i in range(0, 16, 4)]
     k.emit(f"return uvec4({', '.join(words)});")
@@ -493,12 +528,13 @@ def posthead_function(model, scratch_binding):
     return k.function_source([(scratch_binding[0], scratch_binding[1], "scratch")], signature, call), k.groups
 
 
-def generate(index, model, bindings, table=None, banks=None, looped=False):
+def generate(index, model, bindings, table=None, banks=None, looped=False, model_name="standard", band=0):
     """GLSL source of the packed kernel replacing dispatch `index`, its group count and, with a
     `table` dword index into the model buffer, the weight-pair words it reads from there.
     `banks` splits the outputs over that many workgroup layers (kinds that support it);
-    `looped` generates the loop form (fsr4_int8_loops), which needs a table."""
-    spec = dict(PASSES[index], table=table, banks=banks)
+    `looped` generates the loop form (fsr4_int8_loops), which needs a table. `model_name`
+    and `band` select the model's requantization rules and the band's scratch layout."""
+    spec = dict(pass_spec(index, model_name, band), table=table, banks=banks)
     if looped:
         import fsr4_int8_loops
         if table is None or banks:

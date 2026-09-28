@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Generate the resolution-independent FSR4 runtime tables for src/.
 
-Inputs are the verified local reference exports: the original RC11 export supplies
-the DXIL executed natively; the corrected export supplies only the model
-initializers. The output header contains AMD-derived shaders and model data and
-is therefore written to the ignored build tree, never committed.
+The shaders and the model come from the BC250 RC11 provider DLL (tools/fsr4_extract_dll.py),
+for one model and resolution band; the dispatches' bindings, constant blocks and dispatch
+rules, the same for every family, from tools/fsr4_pass_abi.json. The output header contains
+AMD-derived shaders and model data and is therefore written to the ignored build tree,
+never committed.
 """
 import argparse
 import hashlib
@@ -20,8 +21,10 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+ABI = ROOT / "tools/fsr4_pass_abi.json"
 sys.path.insert(0, str(ROOT / "tools"))
 from fsr4_paths import TOOLCHAIN_BIN  # noqa: E402
+import fsr4_extract_dll  # noqa: E402
 import fsr4_int8_kernels  # noqa: E402
 from build_fsr4_frame import blob, load_capture  # noqa: E402
 
@@ -95,11 +98,9 @@ def group_rule(index, dispatch, dxil, output):
         return "PREPASS", 0, 0, 0
     if index == PASSES - 1:
         return "POSTPASS", 0, 0, 0
-    ir = subprocess.run([str(DXC / "bin/dxc"), "-dumpbin", str(dxil)], capture_output=True, text=True,
-                        env=dict(os.environ, LD_LIBRARY_PATH=str(DXC / "lib")), check=True).stdout
-    match = PADDING.search(ir)
-    if match:
-        row, limit_width, limit_height = map(int, match.groups())
+    padding = padding_rule(dxil)
+    if padding:
+        row, limit_width, limit_height = padding
         level = FSR4_TENSOR_LEVEL[row]
         width, height = tensor_extent(output, level)
         expected = [-(-padding_elements(width, height, limit_width, limit_height) // 32), 1, 1]
@@ -111,6 +112,14 @@ def group_rule(index, dispatch, dxil, output):
         if groups == [-(-width // 64), height, 1]:
             return "NETWORK", level, 0, 0
     raise ValueError("No dispatch rule reproduces pass %d: %s" % (index, groups))
+
+
+def padding_rule(dxil):
+    """(CsTensorSizes row, width limit, height limit) compiled into a band-0 border clear, or None."""
+    ir = subprocess.run([str(DXC / "bin/dxc"), "-dumpbin", str(dxil)], capture_output=True, text=True,
+                        env=dict(os.environ, LD_LIBRARY_PATH=str(DXC / "lib")), check=True).stdout
+    match = PADDING.search(ir)
+    return tuple(map(int, match.groups())) if match else None
 
 
 def constants_kind(index, dispatch):
@@ -183,10 +192,10 @@ def pass_bindings(capture, dispatch, role, index):
     return bindings, weights
 
 
-def convert(capture, record, index, out, env):
-    """DXIL of one captured dispatch to validated SPIR-V; returns the DXIL path and SPIR-V bytes."""
+def convert(data, index, out, env):
+    """DXIL of one dispatch to validated SPIR-V; returns the DXIL path and SPIR-V bytes."""
     dxil, spv = out / f"pass{index}.dxil", out / f"pass{index}.spv"
-    dxil.write_bytes(blob(capture, record))
+    dxil.write_bytes(data)
     subprocess.run([str(ROOT / "build/fsr4_dxil_to_spirv"), str(dxil), str(spv)], env=env, check=True)
     subprocess.run([str(TOOLCHAIN_BIN / "spirv-val"),
                     "--target-env", "vulkan1.3", str(spv)], check=True)
@@ -304,7 +313,6 @@ DECORATION_BINDING, DECORATION_DESCRIPTOR_SET, GLSL_SCLAMP, OP_LABEL = 33, 34, 4
 PURE_INTEGER_OPS = {128, 130, 132, 194, 195, 196, 197, 199}
 # Dwords from the postpass's top-left R0 tap (padded row y, column x) to its pixel's latent,
 # which the generated head writes at padded (x + 1, y + 1) of the RA base (962-wide H rows).
-LATENT_OFFSET = (fsr4_int8_kernels.BASES["RA"] + (fsr4_int8_kernels.LEVELS["H"][0] + 1) * 16) // 4
 
 
 def postpass_head(words):
@@ -563,13 +571,13 @@ def drop_linkage(code):
     return struct.pack(f"<{len(result)}I", *result)
 
 
-def fuse_postpass_head(code, model, scratch, out):
+def fuse_postpass_head(code, model, scratch, out, model_name="standard", band=0):
     """The converted postpass with its FP32 learned head replaced by the generated INT8 head,
     linked in as a function; returns validated SPIR-V whose FP32 head is gone."""
     spv, head_glsl, head_spv, linked = (out / "pass27.spv", out / "posthead-function.comp",
                                         out / "posthead-function.spv", out / "pass27-linked.spv")
     spv.write_bytes(call_postpass_head(code, fsr4_int8_kernels.POSTHEAD_FUNCTION))
-    source, groups = fsr4_int8_kernels.posthead_function(model, scratch)
+    source, groups = fsr4_int8_kernels.posthead_function(model, scratch, model_name, band)
     head_glsl.write_text(source)
     # SPIR-V 1.3 like the converted shaders, so the linked module keeps their version.
     subprocess.run([str(TOOLCHAIN_BIN / "glslangValidator"), "--target-env", "vulkan1.1", "-o", str(head_spv),
@@ -667,7 +675,8 @@ def strip_dead_code(spv, guard_removed):
     return code
 
 
-def generate_kernel(index, model, bindings, out, tables, use_table=False, banks=None, looped=False):
+def generate_kernel(index, model, bindings, out, tables, use_table=False, banks=None, looped=False,
+                    model_name="standard", band=0):
     """Packed-i16 kernel for dispatch `index`, compiled to validated SPIR-V; returns its words.
 
     With `use_table`, a kernel that binds the model reads its weight pairs from a table
@@ -677,7 +686,8 @@ def generate_kernel(index, model, bindings, out, tables, use_table=False, banks=
     table = None
     if (use_table or looped) and any(role == "WEIGHTS" for _, _, _, role in bindings):
         table = (len(model) + 3) // 4 + len(tables)
-    source, groups, pairs = fsr4_int8_kernels.generate(index, model, bindings, table, banks, looped)
+    source, groups, pairs = fsr4_int8_kernels.generate(index, model, bindings, table, banks, looped,
+                                                       model_name, band)
     tables += pairs
     glsl, spv = out / f"pass{index}.comp", out / f"pass{index}.spv"
     glsl.write_text(source)
@@ -696,12 +706,19 @@ def emit_code(header, index, code, bindings):
         "{%d,%d,FSR4_DESCRIPTOR_%s,FSR4_ROLE_%s}" % b for b in bindings) + "};")
 
 
+def latent_offset(band):
+    """Dword of the postpass latent at H pixel (0, 0) in the free RA region (the split head)."""
+    layout = fsr4_int8_kernels.LAYOUTS[band]
+    return (layout["bases"]["RA"] + (layout["levels"]["H"][0] + 1) * 16) // 4
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--capture", type=Path, default=ROOT / "build/reference-runtime/capture-export-scalar-unpack")
-    parser.add_argument("--original", type=Path, default=ROOT / "build/reference-runtime/capture-export-before01")
-    parser.add_argument("--rcas", type=Path, default=ROOT / "build/reference-runtime/capture-export-rcas",
-                        help="Export whose frames end with RCAS sharpening (optional)")
+    parser.add_argument("--dll", type=Path, default=ROOT / "build/reference-runtime/bc250-rc11/amd_fidelityfx_upscaler_dx12.dll",
+                        help="The BC250 RC11 amd_fidelityfx_upscaler_dx12.dll the shaders and model are read from")
+    parser.add_argument("--family", choices=fsr4_extract_dll.FAMILIES, default="standard-band0",
+                        help="Model (standard or ultra-performance) and resolution band (0: outputs up to "
+                             "1920x1080, 1: up to 3840x2160)")
     parser.add_argument("--out", type=Path, default=ROOT / "build/fsr4-runtime")
     parser.add_argument("--fp32-fma", choices=("explicit", "compiler-default"), default="explicit")
     parser.add_argument("--keep-model-guards", action="store_true",
@@ -728,6 +745,8 @@ def main():
                              f"from a table (available: {list(fsr4_int8_kernels.LOOPED)}; an empty value "
                              "generates none)")
     args = parser.parse_args()
+    model_name, band = args.family.rsplit("-band", 1)
+    band = int(band)
     looped = {int(i) for i in args.int8_loops.split(",") if i}
     wave64 = {int(i) for i in args.wave64.split(",") if i}
     if wave64 - set(range(PASSES)):
@@ -742,112 +761,88 @@ def main():
                          f"or banks given for looped ones {sorted(looped & set(banked))}")
     if generated - set(fsr4_int8_kernels.PASSES):
         raise SystemExit(f"no generated kernel for dispatch {sorted(generated - set(fsr4_int8_kernels.PASSES))}")
+    own_borders = set(NETWORK_PASSES) <= generated
+    if band and not own_borders:
+        raise SystemExit("band 1 needs every network pass generated: its border clears are not supported")
     # A generated dispatch 26 computes the head separately; the postpass then reads its latent.
     args.int8_postpass_head = args.int8_postpass_head and fsr4_int8_kernels.POSTHEAD not in generated
-    capture, original = args.capture.resolve(), args.original.resolve()
-    graph = load_capture(capture, json.loads((capture / "complete.json").read_text())["graph_sha256"])
-    old = load_capture(original, json.loads((original / "complete.json").read_text())["graph_sha256"])
-    role = roles(graph)
-    textures = {t["resourceId"]: t for t in graph["textures"]}
-    output_id = next(rid for rid, r in role.items() if r == "OUTPUT")
-    output = (textures[output_id]["width"], textures[output_id]["height"])
+    shaders, weights = fsr4_extract_dll.extract(args.dll, args.family)
+    interface = json.loads(ABI.read_text())["passes"]
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     subprocess.run(["make", "fsr4-dxil-converter"], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
     env = dict(os.environ, PS5_FSR4_FP32_FMA="1" if args.fp32_fma == "explicit" else "0")
     header = ["/* Generated by tools/build_fsr4_runtime.py; contains AMD-derived shaders and model data. */",
               "#include <stdint.h>", '#include "fsr4_tables.h"', ""]
-    passes, identities, weights = [], [], None
-    for index in range(PASSES):
-        dispatch, source = graph["dispatches"][index], old["dispatches"][index]
-        if dispatch["shader"] != source["shader"] and dispatch["entryPoint"] != source["entryPoint"]:
-            raise ValueError("Capture and original disagree at pass %d" % index)
-        for frame in range(1, len(old["dispatches"]) // PASSES):
-            if old["dispatches"][frame * PASSES + index]["shader"] != source["shader"]:
-                raise ValueError("Shader sequence changes between frames at pass %d" % index)
-        bindings, data = pass_bindings(capture, dispatch, role, index)
-        constants = constants_kind(index, dispatch)
+    passes, identities = [], []
+    for index in range(PASSES + 1):  # the model passes, then RCAS
+        spec = interface[index]
+        bindings = [tuple(b) for b in spec["bindings"]]
+        constants = spec["constants"]
         if index in generated and constants == "NONE":
             # Generated kernels stop at the current tensor extent from the tensor sizes.
             bindings = bindings + [(2, 0, "UNIFORM_BUFFER", "CONSTANTS")]
             constants = "TENSOR"
-        if data is not None:
-            if weights is not None and weights != data:
-                raise ValueError("Model initializers differ between passes")
-            weights = data
-        dxil, code = convert(original, source["shader"], index, out, env)
-        specialized = code if args.keep_model_guards else specialize_model_guard(code)
-        guard_removed = specialized != code
-        specialized = specialize_single_layer(specialized)
-        if specialized != code:
-            spv = out / f"pass{index}.spv"
-            spv.write_bytes(specialized)
-            code = strip_dead_code(spv, guard_removed)
+        dxil, code = convert(shaders[index], index, out, env)
+        if index < PASSES:
+            specialized = code if args.keep_model_guards else specialize_model_guard(code)
+            guard_removed = specialized != code
+            specialized = specialize_single_layer(specialized)
+            if specialized != code:
+                spv = out / f"pass{index}.spv"
+                spv.write_bytes(specialized)
+                code = strip_dead_code(spv, guard_removed)
         if index in generated:
-            if weights is None:
-                raise ValueError("Model initializers are needed before pass %d" % index)
             use_table = args.weight_tables == "all" or str(index) in args.weight_tables.split(",")
             code = generate_kernel(index, weights, bindings, out, tables, use_table, banked.get(index),
-                                   index in looped)
+                                   index in looped, model_name, band)
         if index == fsr4_int8_kernels.POSTPASS and fsr4_int8_kernels.POSTHEAD in generated:
             spv = out / f"pass{index}.spv"
-            spv.write_bytes(remove_dead_code(route_postpass_latent(code, LATENT_OFFSET)))
+            spv.write_bytes(remove_dead_code(route_postpass_latent(code, latent_offset(band))))
             code = strip_dead_code(spv, False)
             if any(op == OP_EXT_INST and w[i + 4] == GLSL_SCLAMP
                    for w in [struct.unpack(f"<{len(code) // 4}I", code)] for i, op, _ in instructions(w)):
                 raise SystemExit("postpass: the learned head survived dead-code removal")
         elif index == fsr4_int8_kernels.POSTPASS and args.int8_postpass_head:
             scratch = next((s, b) for s, b, _, role in bindings if role == "SCRATCH")
-            code = fuse_postpass_head(code, weights, scratch, out)
-        emit_code(header, index, code, bindings)
-        rule = group_rule(index, dispatch, dxil, output)
-        if index == fsr4_int8_kernels.POSTHEAD and index in generated:
+            code = fuse_postpass_head(code, weights, scratch, out, model_name, band)
+        if index < PASSES:
+            emit_code(header, index, code, bindings)
+        else:
+            rcas = (code, bindings)
+        kind = spec["rule"][0]
+        if kind == "NETWORK":
+            rule = ("NETWORK", spec["rule"][1], 0, 0)
+        elif kind != "PADDING":
+            rule = (kind, 0, 0, 0)
+        elif index == fsr4_int8_kernels.POSTHEAD and index in generated:
             rule = ("NETWORK", 1, 0, 0)  # the head runs per H pixel, not over the border
-        elif index == fsr4_int8_kernels.POSTHEAD and args.int8_postpass_head:
-            # Only the postpass head read the border this pass clears; the linked head checks its
-            # own extent, so the pass is not dispatched.
+        elif (index == fsr4_int8_kernels.POSTHEAD and args.int8_postpass_head) or own_borders:
+            # Only the postpass head read the border dispatch 26 clears, and the linked head checks
+            # its own extent; with every network pass generated, the kernels zero their borders.
             rule = ("NONE", 0, 0, 0)
-        elif index in BORDER_CLEARS and set(NETWORK_PASSES) <= generated:
-            rule = ("NONE", 0, 0, 0)
+        else:
+            padding = padding_rule(dxil)
+            if not padding or padding[0] != spec["rule"][1]:
+                raise SystemExit(f"pass {index}: not the border clear of CsTensorSizes row {spec['rule'][1]}")
+            rule = ("PADDING",) + padding
         if index in banked:
             rule = (rule[0], rule[1], banked[index], rule[3])  # output banks as workgroup layers
-        passes.append((index, constants, rule, len(bindings)))
-        identities.append(dict(index=index, entry=dispatch["entryPoint"], dxil_sha256=sha(dxil.read_bytes()),
-                               spirv_sha256=sha(code), constants=passes[-1][1], bindings=bindings,
-                               groups=rule, reference_groups=dispatch["dispatchDimension"]))
-    if weights is None:
-        raise ValueError("Model initializers were not captured")
+        if index < PASSES:
+            passes.append((index, constants, rule, len(bindings)))
+        identities.append(dict(index=index, entry=spec["entry"], dxil_sha256=sha(dxil.read_bytes()),
+                               spirv_sha256=sha(code), constants=constants, bindings=bindings, groups=rule))
     header.append("static const struct fsr4_pass_info fsr4_passes[FSR4_PASS_COUNT] = {")
     for index, kind, (rule, tensor, limit_width, limit_height), count in passes:
         header.append("{fsr4_code%d,sizeof(fsr4_code%d),FSR4_CONSTANTS_%s,%d,fsr4_bindings%d,"
                       "FSR4_GROUPS_%s,%d,%d,%d}," % (index, index, kind, count, index, rule, tensor,
                                                     limit_width, limit_height))
     header.append("};")
-    rcas = args.rcas.resolve() if args.rcas else None
-    if rcas and (rcas / "complete.json").is_file():
-        sharpened = load_capture(rcas, json.loads((rcas / "complete.json").read_text())["graph_sha256"])
-        if frame_length(sharpened) != PASSES + 1:
-            raise ValueError("The sharpening export has no RCAS pass")
-        if sharpened["dispatches"][PASSES - 1]["shader"] != graph["dispatches"][PASSES - 1]["shader"]:
-            raise ValueError("The sharpening export runs a different postpass")
-        dispatch = sharpened["dispatches"][PASSES]
-        if [x["name"] for x in dispatch["cbv_reflection"]] != ["cbRCAS"]:
-            raise ValueError("Unexpected RCAS constants")
-        rcas_role = roles(sharpened)
-        bindings, _ = pass_bindings(rcas, dispatch, rcas_role, PASSES)
-        rcas_output = next(rid for rid, r in rcas_role.items() if r == "OUTPUT")
-        size = (textures_of(sharpened)[rcas_output]["width"], textures_of(sharpened)[rcas_output]["height"])
-        if dispatch["dispatchDimension"] != [-(-size[0] // 16), -(-size[1] // 16), 1]:
-            raise ValueError("RCAS dispatch rule does not reproduce the capture")
-        dxil, code = convert(rcas, dispatch["shader"], PASSES, out, env)
-        emit_code(header, PASSES, code, bindings)
-        header.append("#define FSR4_HAS_RCAS 1")
-        header.append("static const struct fsr4_pass_info fsr4_rcas_pass = {fsr4_code%d,sizeof(fsr4_code%d),"
-                      "FSR4_CONSTANTS_RCAS,%d,fsr4_bindings%d,FSR4_GROUPS_RCAS,0,0,0};"
-                      % (PASSES, PASSES, len(bindings), PASSES))
-        identities.append(dict(index=PASSES, entry=dispatch["entryPoint"], dxil_sha256=sha(dxil.read_bytes()),
-                               spirv_sha256=sha(code), constants="RCAS", bindings=bindings,
-                               groups=("RCAS", 0, 0, 0), reference_groups=dispatch["dispatchDimension"]))
+    emit_code(header, PASSES, *rcas)
+    header.append("#define FSR4_HAS_RCAS 1")
+    header.append("static const struct fsr4_pass_info fsr4_rcas_pass = {fsr4_code%d,sizeof(fsr4_code%d),"
+                  "FSR4_CONSTANTS_RCAS,%d,fsr4_bindings%d,FSR4_GROUPS_RCAS,0,0,0};"
+                  % (PASSES, PASSES, len(interface[PASSES]["bindings"]), PASSES))
     # The model, then the generated kernels' weight-pair tables: all uploaded to the model buffer.
     padded = weights + b"\0" * (-len(weights) % 4) + struct.pack(f"<{len(tables)}I", *tables)
     header.append("static const uint32_t fsr4_weights[] = {" + ",".join(
@@ -856,8 +851,7 @@ def main():
     header.append(f"#define FSR4_WAVE64_PASSES 0x{sum(1 << i for i in wave64):x}u")
     table = "\n".join(header) + "\n"
     (out / "fsr4_passes.h").write_text(table)
-    manifest = dict(capture_graph_sha256=json.loads((capture / "complete.json").read_text())["graph_sha256"],
-                    original_graph_sha256=json.loads((original / "complete.json").read_text())["graph_sha256"],
+    manifest = dict(dll_sha256=sha(Path(args.dll).read_bytes()), family=args.family,
                     fp32_fma=args.fp32_fma, model_guards=bool(args.keep_model_guards),
                     int8_kernels=sorted(generated), int8_loops=sorted(looped), weight_table_words=len(tables),
                     wave64=sorted(wave64), int8_postpass_head=args.int8_postpass_head,
