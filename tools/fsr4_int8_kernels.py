@@ -181,8 +181,8 @@ class Kernel:
             results = []
             for oc, s in zip((oc0, oc1), sums):
                 name = self.temp("q")
-                value = f"max({s}, 0)" if relu else s
-                self.emit(f"int {name} = clamp(rne({value}, {shifts[oc]}), -128, 127);")
+                # ReLU before a rounding shift equals clamping the rounded value at zero.
+                self.emit(f"int {name} = clamp(rne({s}, {shifts[oc]}), {0 if relu else -128}, 127);")
                 results.append(name)
             if packed:
                 name = self.temp("p")
@@ -237,29 +237,29 @@ def skips(k, base, level, banks, x, y):
     return [f"bitfieldExtract(int({raw[c // 16]}[{c % 16 // 4}]), {8 * (c % 4)}, 8)" for c in range(16 * len(banks))]
 
 
-def wide_block(model, spec):
-    """64-channel residual block stored to scratch (passes 7 and 8)."""
+def residual_block(model, spec):
+    """Residual block stored to scratch at its own level (passes 1, 2, 4, 5, 7, 8, 10, 12)."""
     k = Kernel(spec["name"])
     level = spec["input"][1]
     start(k, level)
     target = k.temp("to")
     k.emit(f"uint {target} = {k.tensor_index(spec['output'][0], level, 'x', 'y')};")
-    wide_prefix(k, model, spec, block=16,
-                done=lambda first, out: k.store_bank(target, level, first // 16, out[first:first + 16]))
+    residual_prefix(k, model, spec, block=16,
+                    done=lambda first, out: k.store_bank(target, level, first // 16, out[first:first + 16]))
     return k
 
 
-def wide_upsample(model, spec):
-    """64-channel residual block followed by a learned 2x2 sub-pixel projection with a skip
-    (pass 9): each invocation writes the four sub-pixel phases of its position."""
+def residual_upsample(model, spec):
+    """Residual block followed by a learned 2x2 sub-pixel projection with a skip (passes 9
+    and 11): each invocation writes the four sub-pixel phases of its position."""
     k = Kernel(spec["name"])
     start(k, spec["input"][1])
-    prefix = wide_prefix(k, model, spec, packed=True)
+    prefix = residual_prefix(k, model, spec, packed=True)
     # Only positions inside the current tensor extent project; each phase stays inside the band.
     k.emit(f"uvec2 extent = tensor_rows[{spec['extent_row']}].xy;")
     k.emit("if (x >= extent.x || y >= extent.y) return;")
     offset, bias_offset, shift, factor = spec["up"]
-    cin, cout = 64, spec["up_channels"]
+    cin, cout = spec["channels"], spec["up_channels"]
     w = signed_bytes(model, offset, 4 * cout * cin)
     bias = int32s(model, bias_offset, cout)
     out_base, out_level = spec["output"]
@@ -280,52 +280,76 @@ def wide_upsample(model, spec):
     return k
 
 
-def wide_prefix(k, model, spec, packed=False, block=None, done=None):
-    """Grouped 3x3 on channels 0-31 (two groups of 16), concat of channels 32-63, 1x1 64->128
-    with ReLU, 1x1 128->64 and the per-channel residual requantization; returns the 64 outputs."""
-    level = spec["input"][1]
-    base = spec["input"][0]
-    w0 = signed_bytes(model, spec["spatial"][0], 9 * 32 * 16)
-    b0 = int32s(model, spec["spatial"][1], 32)
+def residual_prefix(k, model, spec, packed=False, block=None, done=None):
+    """3x3 on channels 0-15 (0-31 as two groups of 16 in 64-channel blocks), concat of the
+    remaining channels, 1x1 C->2C with ReLU, 1x1 2C->C and the per-channel residual
+    requantization; returns the C outputs."""
+    level, base, channels = spec["input"][1], spec["input"][0], spec["channels"]
+    spatial = 32 if channels == 64 else 16
+    w0 = signed_bytes(model, spec["spatial"][0], 9 * spatial * 16)
+    b0 = int32s(model, spec["spatial"][1], spatial)
     learned = []
-    for g in range(2):  # each spatial group reads only its own bank of the 3x3 neighbourhood
+    for g in range(spatial // 16):  # each spatial group reads only its own bank of the neighbourhood
         inputs = []
         for ky in range(3):
             for kx in range(3):
                 inputs += k.load_bytes_banks(base, level, (g,), f"(x + {kx}u - 1u)", f"(y + {ky}u - 1u)")
-        rows = [[w0[((ky * 3 + kx) * 32 + oc) * 16 + ic] for ky in range(3) for kx in range(3) for ic in range(16)]
-                for oc in range(g * 16, g * 16 + 16)]
+        rows = [[w0[((ky * 3 + kx) * spatial + oc) * 16 + ic] for ky in range(3) for kx in range(3)
+                 for ic in range(16)] for oc in range(g * 16, g * 16 + 16)]
         learned += k.layer(inputs, [(-128, 127)] * len(inputs), rows, b0[g * 16:g * 16 + 16],
                            [spec["spatial"][2]] * 16, packed=True)
-    bypass = k.load_bytes_banks(base, level, (2, 3), "x", "y")
-    w1 = signed_bytes(model, spec["expand"][0], 128 * 64)
-    b1 = int32s(model, spec["expand"][1], 128)
-    hidden = k.layer(learned + bypass, [(-128, 127)] * 64, [w1[oc * 64:oc * 64 + 64] for oc in range(128)],
-                     b1, [spec["expand"][2]] * 128, relu=True, packed=True)
+    bypass = k.load_bytes_banks(base, level, range(spatial // 16, channels // 16), "x", "y")
+    hidden_channels = 2 * channels
+    w1 = signed_bytes(model, spec["expand"][0], hidden_channels * channels)
+    b1 = int32s(model, spec["expand"][1], hidden_channels)
+    hidden = k.layer(learned + bypass, [(-128, 127)] * channels,
+                     [w1[oc * channels:(oc + 1) * channels] for oc in range(hidden_channels)],
+                     b1, [spec["expand"][2]] * hidden_channels, relu=True, packed=True)
     # Residual skips from the centre bytes, reread raw and extracted per channel.
-    w2 = signed_bytes(model, spec["contract"][0], 64 * 128)
-    b2 = int32s(model, spec["contract"][1], 64)
+    w2 = signed_bytes(model, spec["contract"][0], channels * hidden_channels)
+    b2 = int32s(model, spec["contract"][1], channels)
     shifts, factors = spec["residual"]
-    skip = skips(k, base, level, range(4), "x", "y")
-    bias = [f"{b2[c]} + {skip[c]} * {factors[c]}" for c in range(64)]
-    return k.layer(hidden, [(0, 127)] * 128, [w2[oc * 128:oc * 128 + 128] for oc in range(64)], bias, shifts,
-                   packed=packed, block=block, done=done)
+    skip = skips(k, base, level, range(channels // 16), "x", "y")
+    bias = [f"{b2[c]} + {skip[c]} * {factors[c]}" for c in range(channels)]
+    return k.layer(hidden, [(0, 127)] * hidden_channels,
+                   [w2[oc * hidden_channels:(oc + 1) * hidden_channels] for oc in range(channels)],
+                   bias, shifts, packed=packed, block=block, done=done)
 
 
-GENERATORS = {"down2x2": down2x2, "wide_block": wide_block, "wide_upsample": wide_upsample}
+GENERATORS = {"down2x2": down2x2, "residual_block": residual_block, "residual_upsample": residual_upsample}
+
+
+def block(name, channels, io, spatial, expand, contract, residual):
+    return dict(name=name, kind="residual_block", channels=channels, input=io[0], output=io[1],
+                spatial=spatial, expand=expand, contract=contract, residual=residual)
+
+
 # Dispatch index -> pass description (model byte offsets, shapes and requantization shifts).
 PASSES = {
+    3: block("pass1", 16, (("R0", "H"), ("RA", "H")), (1152, 3456, 7), (3584, 4096, 8), (4224, 4736),
+             ([6] * 16, [64] * 16)),
+    5: block("pass2", 16, (("RA", "H"), ("R0", "H")), (4864, 7168, 8), (7296, 7808, 7), (7936, 8448),
+             ([7] * 16, [64] * 16)),
+    9: block("pass4", 32, (("RA", "Q"), ("RB", "Q")), (10752, 13056, 7), (13184, 15232, 8), (15488, 17536),
+             ([8] * 16 + [9] * 16, [256] * 32)),
+    11: block("pass5", 32, (("RB", "Q"), ("RA", "Q")), (17664, 19968, 8), (20096, 22144, 8), (22400, 24448),
+              ([8] * 32, [128] * 16 + [256] * 16)),
     13: dict(name="pass6", kind="down2x2", cin=32, cout=64, weights=24576, bias=32768, shift=8,
              input=("RA", "Q"), output=("RB", "E")),
-    15: dict(name="pass7", kind="wide_block", input=("RB", "E"), output=("RC", "E"),
-             spatial=(33024, 37632, 7), expand=(37760, 45952, 7), contract=(46464, 54656),
-             residual=([7] * 32 + [8] * 32, [128] * 64)),
-    17: dict(name="pass8", kind="wide_block", input=("RC", "E"), output=("RB", "E"),
-             spatial=(54912, 59520, 9), expand=(59648, 67840, 6), contract=(68352, 76544),
-             residual=([8] * 64, [128] * 32 + [256] * 32)),
-    19: dict(name="pass9", kind="wide_upsample", input=("RB", "E"), output=("RC", "Q"), skip=("RA", "Q"),
-             spatial=(76800, 81408, 8), expand=(81536, 89728, 7), contract=(90240, 98432),
-             residual=([7] * 64, [128] * 64), up=(98688, 106880, 9, 256), up_channels=32, extent_row=9),
+    15: block("pass7", 64, (("RB", "E"), ("RC", "E")), (33024, 37632, 7), (37760, 45952, 7), (46464, 54656),
+              ([7] * 32 + [8] * 32, [128] * 64)),
+    17: block("pass8", 64, (("RC", "E"), ("RB", "E")), (54912, 59520, 9), (59648, 67840, 6), (68352, 76544),
+              ([8] * 64, [128] * 32 + [256] * 32)),
+    19: dict(block("pass9", 64, (("RB", "E"), ("RC", "Q")), (76800, 81408, 8), (81536, 89728, 7), (90240, 98432),
+                   ([7] * 64, [128] * 64)),
+             kind="residual_upsample", skip=("RA", "Q"), up=(98688, 106880, 9, 256), up_channels=32, extent_row=9),
+    21: block("pass10", 32, (("RC", "Q"), ("RA", "Q")), (107008, 109312, 8), (109440, 111488, 7), (111744, 113792),
+              ([7] * 32, [128] * 32)),
+    23: dict(block("pass11", 32, (("RA", "Q"), ("RB", "H")), (113920, 116224, 8), (116352, 118400, 8),
+                   (118656, 120704), ([9] * 32, [256] * 32)),
+             kind="residual_upsample", skip=("R0", "H"), up=(120832, 122880, 7, 128), up_channels=16, extent_row=11),
+    25: block("pass12", 16, (("RB", "H"), ("R0", "H")), (123008, 125312, 7), (125440, 125952, 8), (126080, 126592),
+              ([7] * 16, [64] * 16)),
 }
 BINDINGS = {"WEIGHTS": "model", "SCRATCH": "scratch", "CONSTANTS": "tensor"}
 
