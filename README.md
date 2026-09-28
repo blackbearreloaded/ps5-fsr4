@@ -1,12 +1,5 @@
 # PS5 FSR4
 
-![Captured on a PS5: bilinear and FSR4 upscales of 960×540 to 1920×1080, native 1080p and a 64× supersampled reference, 3× zoom](comparisons/hero.png)
-
-*Captured on a PS5: FSR4 upscales 960×540 to 1920×1080 in about 2.9 ms. From a quarter of the
-pixels it comes closer to a 64× supersampled reference (37.5 dB) than native 1080p rendering
-does (31.2 dB). More shots, full-size frames, metrics and a motion clip:
-[comparisons](comparisons/README.md).*
-
 > [!WARNING]
 > **Experimental.** FSR4 runs natively on the PS5 and passes its acceptance
 > against the WARP reference in every captured scenario, but this is not a
@@ -39,11 +32,22 @@ This project is independent of the upstream driver project.
   dynamic resolution, sharpening, several output sizes and the 1080p target
   ([validation](VALIDATION.md#fsr4-acceptance)).
 - An interactive demo renders a scene, upscales it and presents it at 60 fps.
-- [Before/after comparisons](comparisons/README.md) captured on the console:
-  bilinear, FSR4, native 1080p and a supersampled reference for three shots at
-  720p and 540p input, with PSNR/SSIM and an orbiting clip.
 - `tools/build_fsr4_sdk.py` stages the SDK: `libps5_fsr4.a`, its header,
   notices and a warmed pipeline cache ([FSR4 SDK](docs/FSR4_SDK.md)).
+
+## Before and after
+
+![Captured on a PS5: bilinear and FSR4 upscales of 960×540 to 1920×1080, native 1080p and a 64× supersampled reference, 3× zoom](comparisons/hero.png)
+
+*Captured on a PS5: FSR4 upscales 960×540 to 1920×1080 in about 2.9 ms. From a quarter of the
+pixels it comes closer to a 64× supersampled reference (37.5 dB) than native 1080p rendering
+does (31.2 dB).*
+
+> [!TIP]
+> **Every comparison is in [`comparisons/`](comparisons/README.md)**: three shots of the demo
+> scene at 1280×720 and 960×540 input, lossless full-size frames, 1:1 crops, 3× zooms,
+> PSNR/SSIM against the supersampled reference and an orbiting motion clip, all captured on
+> the console.
 
 ## Layout
 
