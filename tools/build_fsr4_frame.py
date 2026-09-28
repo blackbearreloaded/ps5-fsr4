@@ -13,6 +13,7 @@ import subprocess
 import sys
 import zlib
 from build_fsr4_clear import ROOT, DIST_SDK, build_native_app, native_inputs
+from fsr4_paths import DRIVER, TOOLCHAIN_BIN
 
 CORRECTED_GRAPH = "874530841b8ff2a4b8b62544ff2faf5bd7a16cf166dbc583b1995eddbe261ff7"
 ORIGINAL_GRAPH = "0bec7f83e033ff72b151fe7b2fa945244d51474120f90757fc144ca6d2310f9d"
@@ -193,9 +194,9 @@ def main():
                            shader=blob(original, shader), bindings=bindings, outputs=outputs))
     env = dict(os.environ, PS5_FSR4_FP32_FMA="1" if args.fp32_fma == "explicit" else "0", PS5_PAYLOAD_SDK=str(sdk), PS5VK_SHADER_INT8_DIAGNOSTIC="1",
                PS5VK_SHADER_INT16_DIAGNOSTIC="1", PS5VK_SUBGROUP_ALL_DIAGNOSTIC="1",
-               PS5VK_FSR4_STORAGE_DIAGNOSTIC="1")
+               PS5VK_EXTENDED_COMPUTE_DIAGNOSTIC="1")
     if not args.use_staged_sdk:
-        subprocess.run([sys.executable, str(ROOT / "tools/build_sdk.py")], env=env, check=True)
+        subprocess.run([sys.executable, str(DRIVER / "tools/build_sdk.py")], cwd=DRIVER, env=env, check=True)
     subprocess.run(["make", "fsr4-dxil-converter"], cwd=ROOT, check=True)
     header = FRAME_DECLARATIONS
     header += "static const struct fsr4_resource_desc fsr4_resources[] = {\n"
@@ -216,7 +217,7 @@ def main():
         dxil, spv = out / f"pass{dispatch['index']}.dxil", out / f"pass{dispatch['index']}.spv"
         dxil.write_bytes(dispatch["shader"])
         subprocess.run([str(ROOT / "build/fsr4_dxil_to_spirv"), str(dxil), str(spv)], env=env, check=True)
-        subprocess.run([str(ROOT / "build/runtime-graphics/toolchain/usr/bin/spirv-val"), "--target-env", "vulkan1.3", str(spv)], check=True)
+        subprocess.run([str(TOOLCHAIN_BIN / "spirv-val"), "--target-env", "vulkan1.3", str(spv)], check=True)
         code = spv.read_bytes()
         header += f"static const uint32_t code{n}[] = {{" + ",".join(hex(w) for w in struct.unpack(f"<{len(code)//4}I", code)) + "};\n"
         header += f"static const struct fsr4_binding bindings{n}[] = {{" + ",".join("{%d,%d,%s,%d}" % x for x in dispatch["bindings"]) + "};\n"
@@ -229,7 +230,7 @@ def main():
     fixture_id = sha(header.encode() + b"".join(x["initial"] + (x["expected"] or b"") for x in resources))
     header += f'#define FSR4_FIXTURE_ID "{fixture_id}"\n'
     (out / "fsr4_frame_fixture.h").write_text(header)
-    build_native_app(out, ROOT / "examples/native_consumer/fsr4_frame_main.c", "FSR4 Native Frame Test")
+    build_native_app(out, ROOT / "examples/fsr4_frame_main.c", "FSR4 Native Frame Test")
     manifest = dict(title="PPSA88900", fixture_id=fixture_id, dispatches=identities,
                     translation_policy="scalar FP16 RTZ, typed-resource FP16 RTE, FP32 dot2 products, " + args.fp32_fma + " FP32 FMA, FP16 denorm preserve",
                     fp32_fma=args.fp32_fma,

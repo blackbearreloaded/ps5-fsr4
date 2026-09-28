@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import os
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +38,8 @@ void main(uint3 tid : SV_DispatchThreadID) {
 def main():
     dxc = ROOT / "build/reference-runtime/dxc/linux_dxc_2026_07_29.x86_x64/bin/dxc"
     converter = ROOT / "build/fsr4_dxil_to_spirv"
-    tools = ROOT / "build/runtime-graphics/toolchain/usr/bin"
+    sys.path.insert(0, str(ROOT / "tools"))
+    from fsr4_paths import TOOLCHAIN_BIN as tools
     with tempfile.TemporaryDirectory(prefix="fsr4-fma-", dir=ROOT / "build") as temp:
         out = Path(temp)
         shader = out / "contract.hlsl"

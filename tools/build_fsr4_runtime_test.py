@@ -16,11 +16,12 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+from fsr4_paths import VULKAN_HEADERS  # noqa: E402
 from build_fsr4_frame import blob, load_capture  # noqa: E402
 from build_fsr4_runtime import frame_length, roles  # noqa: E402
 
-SOURCES = [ROOT / "src/fsr4/ps5_fsr4.c"]
-INCLUDES = [ROOT / "include", ROOT / "src/fsr4"]
+SOURCES = [ROOT / "src/ps5_fsr4.c"]
+INCLUDES = [ROOT / "include", ROOT / "src"]
 # Dispatch parameters of the pinned reference probe (references/bc250-fsr4-fork/dll/probe/provider_probe.c).
 FLAGS = {"sdr": "PS5FSR4_FLAG_AUTO_EXPOSURE"}
 SHARPNESS = {"rcas": 0.4}  # enableSharpening with this sharpness
@@ -97,10 +98,10 @@ def main():
         "static const struct { float jitter_x, jitter_y; uint32_t render_width, render_height, reset; } "
         "fsr4_rt_frames[] = {" + ",".join(rows) + "};", ""])
     (out / "fsr4_runtime_fixture.h").write_text(header)
-    source = ROOT / "examples/native_consumer/fsr4_runtime_test.c"
+    source = ROOT / "examples/fsr4_runtime_test.c"
     includes = [*INCLUDES, args.runtime.resolve()]
     if args.host:
-        vulkan = ROOT / "third_party/vulkan-headers/include"
+        vulkan = VULKAN_HEADERS
         subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-DFSR4_HOST", "-D_DEFAULT_SOURCE",
                         "-I" + str(out), "-I" + str(vulkan), *("-I" + str(x) for x in includes),
                         str(source), *map(str, SOURCES), "/usr/lib/x86_64-linux-gnu/libvulkan.so.1", "-lm",

@@ -10,6 +10,7 @@ import struct
 import subprocess
 import zlib
 from build_fsr4_clear import ROOT, DIST_SDK, build_native_app, native_inputs
+from fsr4_paths import TOOLCHAIN_BIN
 from build_fsr4_frame import FRAME_DECLARATIONS, sha
 
 
@@ -79,9 +80,9 @@ def main():
     dxil, spv = out / "precision.dxil", out / "precision.spv"
     subprocess.run([str(dxc), "-T", "cs_6_6", "-E", "main", "-enable-16bit-types",
                     "-D", f"COUNT={page_bytes//4}", "-D", f"ROUND_TO_EVEN={int(args.rounding == 'rte')}", "-Fo", str(dxil),
-                    str(ROOT / "experiments/fsr4/fp16_rtz.hlsl")], check=True)
+                    str(ROOT / "experiments/fp16_rtz.hlsl")], check=True)
     subprocess.run([str(ROOT / "build/fsr4_dxil_to_spirv"), str(dxil), str(spv)], check=True)
-    subprocess.run([str(ROOT / "build/runtime-graphics/toolchain/usr/bin/spirv-val"),
+    subprocess.run([str(TOOLCHAIN_BIN / "spirv-val"),
                     "--target-env", "vulkan1.3", str(spv)], check=True)
     code = spv.read_bytes()
     fixture_id = sha(data + expected + code)
@@ -100,7 +101,7 @@ def main():
     header += '};\n'
     header += '#define FSR4_FIXTURE_ID "%s"\n' % fixture_id
     (out / "fsr4_frame_fixture.h").write_text(header)
-    build_native_app(out, ROOT / "examples/native_consumer/fsr4_frame_main.c", "FSR4 Precision Test")
+    build_native_app(out, ROOT / "examples/fsr4_frame_main.c", "FSR4 Precision Test")
     manifest = dict(title="PPSA88900", fixture_id=fixture_id, test=("typed texture FP32 to FP16 RTE" if args.rounding == "rte" else "scalar FP32 to FP16 RTZ"),
                     cases=count, expected_sha256=sha(expected), dxil_sha256=sha(dxil.read_bytes()),
                     spirv_sha256=sha(code), hardware_tested=False, complete_fsr4=False,

@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Host shim exposing the FSR4 constant encoders to tests/test_fsr4_runtime_constants.py.
  */
-#include "../src/fsr4/fsr4_layout.h"
+#include "../src/fsr4_layout.h"
 
 int fsr4_test_groups(uint32_t max_render_w, uint32_t max_render_h, uint32_t output_w, uint32_t output_h,
                      uint32_t render_w, uint32_t render_h, uint32_t rule, uint32_t tensor,

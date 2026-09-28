@@ -75,7 +75,7 @@ class CaptureContinuity(unittest.TestCase):
                 load_capture(path, digest)
 
     def test_diagnostic_image_extent_stays_separate_from_normal_profile(self):
-        root = Path(__file__).resolve().parents[1]
+        from fsr4_paths import DRIVER as root, VULKAN_HEADERS
         source = """
 #include "texture_format.h"
 #include <assert.h>
@@ -86,7 +86,7 @@ int main(void) {
         .samples=VK_SAMPLE_COUNT_1_BIT, .tiling=VK_IMAGE_TILING_OPTIMAL,
         .usage=VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
-#if PS5VK_FSR4_STORAGE_DIAGNOSTIC
+#if PS5VK_EXTENDED_COMPUTE_DIAGNOSTIC
     assert(ps5vk_storage_image_info(&image));
     image.extent.width=1920; image.extent.height=1080;
     assert(ps5vk_storage_image_info(&image));
@@ -105,9 +105,9 @@ int main(void) {
             (path / "extent.c").write_text(source)
             for enabled in (0, 1):
                 subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
-                                "-DPS5VK_FSR4_STORAGE_DIAGNOSTIC=%d" % enabled,
+                                "-DPS5VK_EXTENDED_COMPUTE_DIAGNOSTIC=%d" % enabled,
                                 "-I" + str(root / "src"),
-                                "-I" + str(root / "third_party/vulkan-headers/include"),
+                                "-I" + str(VULKAN_HEADERS),
                                 str(root / "src/texture_format.c"), str(path / "extent.c"),
                                 "-o", str(path / "extent")], check=True)
                 subprocess.run([str(path / "extent")], check=True)

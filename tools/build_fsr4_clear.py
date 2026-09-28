@@ -16,7 +16,8 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from build_consumer import native_inputs, DIST_SDK
+from fsr4_paths import DIST_SDK, DRIVER, TOOLCHAIN_BIN, stage_driver_sdk  # noqa: E402
+from build_consumer import native_inputs  # noqa: E402
 
 CLEAR_SHA = "f3b9b2e3dc6eb22d593fa74ec77223cf828c85ba8910be2a2c5ddb5833d7bbed"
 NEURAL_SHADERS = {
@@ -91,6 +92,7 @@ def buffer_chain(graph):
 def build_native_app(out, source_file, title_name, extra_sources=(), include_dirs=(), libraries=()):
     """Use the same native template, heap and public SDK for both witnesses."""
     foundation, sdk, compiler, builder, gears = native_inputs()
+    stage_driver_sdk()
     env = dict(os.environ, PS5_PAYLOAD_SDK=str(sdk))
     package = out / "PPSA88900"
     for folder in ("sce_sys", "sce_module"):
@@ -105,7 +107,7 @@ def build_native_app(out, source_file, title_name, extra_sources=(), include_dir
                        env=env, check=True)
         # Only public SDK, SDK-level FSR4 runtime and generated headers are used by this consumer.
         deps = dep.read_text()
-        if str(ROOT / "src/ps5vk_") in deps or str(ROOT / "native") + "/" in deps:
+        if str(DRIVER / "src/ps5vk_") in deps or str(DRIVER / "native") + "/" in deps:
             raise ValueError("Private implementation header in clear consumer")
         objects.append(obj)
     subprocess.run([str(sdk / "bin/prospero-clang++"), "-std=c++20", "-O2",
@@ -113,7 +115,7 @@ def build_native_app(out, source_file, title_name, extra_sources=(), include_dir
                     str(foundation / "tooling/native/app_crt.cpp"), "-o", str(crt)], env=env, check=True)
     heap = out / "native_heap.o"
     subprocess.run([str(compiler), "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
-                    "-c", str(ROOT / "examples/native_consumer/native_heap.c"), "-o", str(heap)],
+                    "-c", str(ROOT / "examples/native_heap.c"), "-o", str(heap)],
                    env=env, check=True)
     pie, elf = out / "clear-pie.elf", out / "eboot.elf"
     subprocess.run([str(sdk / "bin/prospero-lld"), "-L" + str(sdk / "target/lib"),
@@ -217,8 +219,8 @@ def main():
     if model:
         env.update(PS5VK_SHADER_INT8_DIAGNOSTIC="1", PS5VK_SHADER_INT16_DIAGNOSTIC="1",
                    PS5VK_SUBGROUP_ALL_DIAGNOSTIC="1")
-    if not args.use_staged_sdk or not (DIST_SDK / "lib/libps5vk.a").is_file():
-        subprocess.run([sys.executable, str(ROOT / "tools/build_sdk.py")], env=env, check=True)
+    if not args.use_staged_sdk or not (DRIVER / "dist-sdk/lib/libps5vk.a").is_file():
+        subprocess.run([sys.executable, str(DRIVER / "tools/build_sdk.py")], cwd=DRIVER, env=env, check=True)
     package = out / "PPSA88900"
     for folder in ("sce_sys", "sce_module", "assets"):
         (package / folder).mkdir(parents=True, exist_ok=True)
@@ -230,7 +232,7 @@ def main():
         dxil, spv = out / (stem + ".dxil"), out / (stem + ".spv")
         dxil.write_bytes(shader)
         subprocess.run([str(ROOT / "build/fsr4_dxil_to_spirv"), str(dxil), str(spv)], check=True)
-        subprocess.run([str(ROOT / "build/runtime-graphics/toolchain/usr/bin/spirv-val"),
+        subprocess.run([str(TOOLCHAIN_BIN / "spirv-val"),
                         "--target-env", "vulkan1.3", str(spv)], check=True)
         programs.append(spv.read_bytes())
         identities.append(dict(index=index, groups=record["dispatchDimension"],
@@ -257,7 +259,7 @@ def main():
     (out / "fsr4_clear_fixture.h").write_text(header)
     for name, data in [("before.bin", before), ("expected.bin", expected), ("constants.bin", constants), ("model.bin", model)]:
         (package / "assets" / name).write_bytes(data)
-    build_native_app(out, ROOT / "examples/native_consumer/fsr4_clear_main.c",
+    build_native_app(out, ROOT / "examples/fsr4_clear_main.c",
                      "FSR4 Captured Kernel Test")
     manifest = dict(title="PPSA88900",
                     translation_policy="scalar FP16 RTZ, typed-resource FP16 RTE, FP32 dot2 products, explicit FP32 FMA, FP16 denorm preserve",

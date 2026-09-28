@@ -11,12 +11,15 @@ import struct
 import subprocess
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fsr4_paths import TOOLCHAIN_BIN  # noqa: E402
+
 PREFIX = "fsr4_model_v07_fp8_no_scale_"
 ORDER = ["prepass", *(f"pass{i}" for i in range(1, 13)), "postpass"]
 
 
 def tool(name):
-    local = Path("build/runtime-graphics/toolchain/usr/bin") / name
+    local = TOOLCHAIN_BIN / name
     found = shutil.which(name) or (str(local) if local.is_file() else None)
     if not found:
         raise RuntimeError(f"Missing SPIRV-Tools program: {name}")

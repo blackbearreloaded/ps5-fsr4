@@ -4,12 +4,15 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+from fsr4_paths import VULKAN_HEADERS  # noqa: E402
 EXPORTS = ROOT / "build/reference-runtime"
 MANIFEST = ROOT / "build/fsr4-runtime/manifest.json"
-VULKAN = ROOT / "third_party/vulkan-headers/include"
+VULKAN = VULKAN_HEADERS
 WORDS = {"SPD": 7, "MLSR": 26, "TENSOR": 68, "RCAS": 8}
 RULES = ("SPD", "PREPASS", "POSTPASS", "NETWORK", "PADDING", "RCAS")
 SHARPNESS = {"rcas": 0.4}

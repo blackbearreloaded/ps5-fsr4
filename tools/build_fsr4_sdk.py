@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage the ps5_fsr4 SDK into dist-sdk and verify relocated C and C++ consumers.
 
-Requires the staged Vulkan SDK (tools/build_sdk.py) and the generated FSR4 pass
-tables (tools/build_fsr4_runtime.py). Adds to dist-sdk:
+Requires the driver's staged SDK (make driver-sdk) and the generated FSR4 pass
+tables (tools/build_fsr4_runtime.py). Copies the driver SDK to dist-sdk and adds:
   include/ps5fsr4/ps5_fsr4.h
   lib/libps5_fsr4.a               native runtime; shaders and model data built in
   share/ps5fsr4/                  provenance, notices and an optional warmed
@@ -25,7 +25,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from build_consumer import DIST_SDK, native_inputs  # noqa: E402
+from fsr4_paths import DIST_SDK, DRIVER, stage_driver_sdk  # noqa: E402
+from build_consumer import native_inputs  # noqa: E402
 from build_sdk import archive  # noqa: E402
 
 CONSUMERS = (("fsr4_sdk_consumer.c", "-std=c11"), ("fsr4_sdk_consumer.cpp", "-std=c++20"))
@@ -45,7 +46,7 @@ def sha(path):
 
 
 def compiler_version():
-    text = (ROOT / "src/compilation_cache.h").read_text()
+    text = (DRIVER / "src/compilation_cache.h").read_text()
     return int(re.search(r"#define PS5VK_COMPILER_VERSION\s+UINT32_C\((\d+)\)", text).group(1))
 
 
@@ -72,12 +73,13 @@ def main():
                         help="AMD FidelityFX SDK notice from the pinned BC250 FSR4 checkout")
     args = parser.parse_args()
     runtime = args.runtime.resolve()
+    stage_driver_sdk()
     required = [DIST_SDK / "lib/libps5vk.a", DIST_SDK / "lib/libpsbc.a", runtime / "fsr4_passes.h",
                 runtime / "manifest.json", args.amd_notice]
     missing = [str(p) for p in required if not p.is_file()]
     if missing:
         raise SystemExit("Missing inputs: " + ", ".join(missing) +
-                         " (run tools/build_sdk.py and tools/build_fsr4_runtime.py first)")
+                         " (run make driver-sdk and tools/build_fsr4_runtime.py first)")
     foundation, sdk, compiler, _, _ = native_inputs()
     env = dict(os.environ, PS5_PAYLOAD_SDK=str(sdk))
     work = ROOT / "build/fsr4-sdk"
@@ -89,8 +91,8 @@ def main():
     obj = work / "ps5_fsr4.o"
     subprocess.run([str(compiler), "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
                     "-ffunction-sections", "-fdata-sections", "-I" + str(DIST_SDK / "include"),
-                    "-I" + str(ROOT / "src/fsr4"), "-I" + str(runtime),
-                    "-c", str(ROOT / "src/fsr4/ps5_fsr4.c"), "-o", str(obj)], env=env, check=True)
+                    "-I" + str(ROOT / "src"), "-I" + str(runtime),
+                    "-c", str(ROOT / "src/ps5_fsr4.c"), "-o", str(obj)], env=env, check=True)
     ar = sdk / "bin/prospero-ar"
     archive(str(ar) if ar.is_file() else "ar", DIST_SDK / "lib/libps5_fsr4.a", [str(obj)])
 

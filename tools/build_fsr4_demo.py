@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Build the interactive native FSR4 demo (PPSA88900) against the staged ps5_fsr4 SDK.
 
-Stage the SDK first with tools/build_sdk.py and tools/build_fsr4_sdk.py; the demo
+Stage the SDK first with make driver-sdk and tools/build_fsr4_sdk.py; the demo
 uses only its public headers, archives and warmed pipeline cache.
 """
 import argparse
@@ -16,14 +16,14 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from build_consumer import DIST_SDK  # noqa: E402
+from fsr4_paths import DIST_SDK, TOOLCHAIN_BIN  # noqa: E402
 from build_fsr4_clear import build_native_app  # noqa: E402
 
 SHADERS = ("scene.comp", "present.comp", "blit.vert", "blit.frag")
 
 
 def glslang():
-    local = ROOT / "build/runtime-graphics/toolchain/usr/bin/glslangValidator"
+    local = TOOLCHAIN_BIN / "glslangValidator"
     return str(local) if local.exists() else os.environ.get("GLSLANG", "glslangValidator")
 
 
@@ -40,7 +40,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     header = ["#include <stdint.h>"]
     for shader in SHADERS:
-        source = ROOT / f"examples/native_consumer/fsr4_demo_{shader}"
+        source = ROOT / f"examples/fsr4_demo_{shader}"
         name = shader.replace(".comp", "").replace(".", "_")
         spv = out / f"fsr4_demo_{name}.spv"
         subprocess.run([glslang(), "-V", "--target-env", "vulkan1.1", str(source), "-o", str(spv)],
@@ -55,7 +55,7 @@ def main():
         cache.write_bytes(args.pipeline_cache.read_bytes())
     elif cache.exists():
         cache.unlink()
-    build_native_app(out, ROOT / "examples/native_consumer/fsr4_demo_main.c", "FSR4 Native Demo",
+    build_native_app(out, ROOT / "examples/fsr4_demo_main.c", "FSR4 Native Demo",
                      libraries=[library])
     print(json.dumps(dict(package=str(out / "PPSA88900"), pipeline_cache=cache.exists()), indent=2))
 

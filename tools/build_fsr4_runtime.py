@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Generate the resolution-independent FSR4 runtime tables for src/fsr4.
+"""Generate the resolution-independent FSR4 runtime tables for src/.
 
 Inputs are the verified local reference exports: the original RC11 export supplies
 the DXIL executed natively; the corrected export supplies only the model
@@ -20,6 +20,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+from fsr4_paths import TOOLCHAIN_BIN  # noqa: E402
 from build_fsr4_frame import blob, load_capture  # noqa: E402
 
 PASSES = 28
@@ -174,7 +175,7 @@ def convert(capture, record, index, out, env):
     dxil, spv = out / f"pass{index}.dxil", out / f"pass{index}.spv"
     dxil.write_bytes(blob(capture, record))
     subprocess.run([str(ROOT / "build/fsr4_dxil_to_spirv"), str(dxil), str(spv)], env=env, check=True)
-    subprocess.run([str(ROOT / "build/runtime-graphics/toolchain/usr/bin/spirv-val"),
+    subprocess.run([str(TOOLCHAIN_BIN / "spirv-val"),
                     "--target-env", "vulkan1.3", str(spv)], check=True)
     return dxil, spv.read_bytes()
 
