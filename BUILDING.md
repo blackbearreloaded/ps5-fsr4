@@ -53,6 +53,9 @@ and write their own result files:
   [acceptance](VALIDATION.md#fsr4-acceptance);
 - the interactive demo (`tools/build_fsr4_demo.py`), built from the staged
   [FSR4 SDK](docs/FSR4_SDK.md);
+- the headless benchmark (`tools/build_fsr4_bench.py`), which times 720p to
+  1080p upscaling from submission to fence and profiles each pass, without a
+  display or a capture;
 - the replay and precision witnesses below.
 
 They need the driver SDK staged with the FSR4 profile (`make driver-sdk`).
