@@ -180,16 +180,61 @@ def convert(capture, record, index, out, env):
     return dxil, spv.read_bytes()
 
 
-OP_CAPABILITY, OP_TYPE_BOOL, OP_CONSTANT_TRUE, OP_FUNCTION = 17, 20, 41, 54
-OP_COPY_OBJECT, OP_BRANCH_CONDITIONAL, OP_GROUP_ALL = 83, 250, 334
+OP_CAPABILITY, OP_TYPE_BOOL, OP_CONSTANT_TRUE, OP_CONSTANT_FALSE, OP_CONSTANT = 17, 20, 41, 42, 43
+OP_FUNCTION, OP_LOAD, OP_ACCESS_CHAIN, OP_DECORATE, OP_COMPOSITE_EXTRACT = 54, 61, 65, 71, 81
+OP_COPY_OBJECT, OP_IEQUAL, OP_INOTEQUAL, OP_BRANCH_CONDITIONAL, OP_GROUP_ALL = 83, 170, 171, 250, 334
 CAPABILITY_GROUP_NON_UNIFORM, CAPABILITY_GROUP_NON_UNIFORM_VOTE = 61, 62
-# Dead-code removal once the vote is constant. Inlining lets the aggressive pass drop the
-# comparison loop (it keeps function calls); the interface pass then frees the subgroup
-# built-ins the loop read, so the second aggressive pass and the trim remove them and
+DECORATION_BUILTIN = 11
+BUILTIN_WORKGROUP_ID, BUILTIN_LOCAL_INVOCATION_ID, BUILTIN_GLOBAL_INVOCATION_ID = 26, 27, 28
+# Dead-code removal once branches are constant. Inlining lets the aggressive pass drop the
+# guard's comparison loop (it keeps function calls); the interface pass then frees the
+# built-ins that dead code read, so the second aggressive pass and the trim remove them and
 # their capabilities. Instruction simplification is left out: it rewrites live code.
-GUARD_STRIP_PASSES = ("--eliminate-dead-branches", "--inline-entry-points-exhaustive", "--eliminate-dead-functions",
-                      "--eliminate-dead-code-aggressive", "--remove-unused-interface-variables",
-                      "--eliminate-dead-code-aggressive", "--trim-capabilities")
+STRIP_PASSES = ("--eliminate-dead-branches", "--inline-entry-points-exhaustive", "--eliminate-dead-functions",
+                "--eliminate-dead-code-aggressive", "--remove-unused-interface-variables",
+                "--eliminate-dead-code-aggressive", "--trim-capabilities")
+
+
+def instructions(words):
+    i = 5
+    while i < len(words):
+        yield i, words[i] & 0xffff, words[i] >> 16
+        i += words[i] >> 16
+
+
+def bool_constants(words, values):
+    """Ids of the boolean constants for `values`, declared before the first function when missing."""
+    bool_type = first_function = None
+    found = {}
+    for i, op, count in instructions(words):
+        if op == OP_TYPE_BOOL:
+            bool_type = words[i + 1]
+        elif op in (OP_CONSTANT_TRUE, OP_CONSTANT_FALSE) and words[i + 1] == bool_type:
+            found.setdefault(op == OP_CONSTANT_TRUE, words[i + 2])
+        elif op == OP_FUNCTION and first_function is None:
+            first_function = i
+    insert = []
+    for value in sorted(set(values) - set(found)):
+        found[value], words[3] = words[3], words[3] + 1
+        insert += [(3 << 16) | (OP_CONSTANT_TRUE if value else OP_CONSTANT_FALSE), bool_type, found[value]]
+    return words[:first_function] + insert + words[first_function:], found
+
+
+def branch_on_constants(code, words, conditions, replace_votes=False):
+    """Every OpBranchConditional on a key of `conditions` branches on that constant instead;
+    with `replace_votes`, each OpGroupNonUniformAll also becomes a copy of true."""
+    if not conditions:
+        return code
+    words, constants = bool_constants(words, list(conditions.values()) + [True] * replace_votes)
+    result = words[:5]
+    for i, op, count in instructions(words):
+        if replace_votes and op == OP_GROUP_ALL:
+            result += [(4 << 16) | OP_COPY_OBJECT, words[i + 1], words[i + 2], constants[True]]
+        elif op == OP_BRANCH_CONDITIONAL and words[i + 1] in conditions:
+            result += [words[i], constants[conditions[words[i + 1]]]] + words[i + 2:i + count]
+        else:
+            result += words[i:i + count]
+    return struct.pack(f"<{len(result)}I", *result)
 
 
 def specialize_model_guard(code):
@@ -204,38 +249,40 @@ def specialize_model_guard(code):
     has no vote.
     """
     words = list(struct.unpack(f"<{len(code) // 4}I", code))
-    bool_type = true_id = first_function = None
-    votes = {}
-    i = 5
-    while i < len(words):
-        count, op = words[i] >> 16, words[i] & 0xffff
-        if op == OP_TYPE_BOOL:
-            bool_type = words[i + 1]
-        elif op == OP_CONSTANT_TRUE and words[i + 1] == bool_type:
-            true_id = words[i + 2]
-        elif op == OP_FUNCTION and first_function is None:
-            first_function = i
-        elif op == OP_GROUP_ALL:
-            votes[i] = words[i + 2]
-        i += count
-    if not votes:
-        return code
-    insert = []
-    if true_id is None:
-        true_id, words[3] = words[3], words[3] + 1
-        insert = [(3 << 16) | OP_CONSTANT_TRUE, bool_type, true_id]
-    result = words[:first_function] + insert
-    i = first_function
-    while i < len(words):
-        count, op = words[i] >> 16, words[i] & 0xffff
-        if i in votes:
-            result += [(4 << 16) | OP_COPY_OBJECT, words[i + 1], words[i + 2], true_id]
-        elif op == OP_BRANCH_CONDITIONAL and words[i + 1] in votes.values():
-            result += [words[i], true_id] + words[i + 2:i + count]
-        else:
-            result += words[i:i + count]
-        i += count
-    return struct.pack(f"<{len(result)}I", *result)
+    votes = {words[i + 2]: True for i, op, _ in instructions(words) if op == OP_GROUP_ALL}
+    return branch_on_constants(code, words, votes, replace_votes=True)
+
+
+def specialize_single_layer(code):
+    """Branch on z == 0 as a constant.
+
+    The runtime dispatches every pass as one z layer of workgroups one invocation
+    deep, so the z component of the workgroup and invocation ids is always zero.
+    Passes 3, 6, 7, 8, 9 and 11 still choose their baked path with z == 0 and keep
+    a generic body for the other layers; that body is dead here. Returns the code
+    unchanged when no branch tests z against zero.
+    """
+    words = list(struct.unpack(f"<{len(code) // 4}I", code))
+    ids = (BUILTIN_WORKGROUP_ID, BUILTIN_LOCAL_INVOCATION_ID, BUILTIN_GLOBAL_INVOCATION_ID)
+    builtins, values, chains, vectors, z, conditions = set(), {}, set(), set(), set(), {}
+    for i, op, count in instructions(words):
+        if op == OP_DECORATE and count == 4 and words[i + 2] == DECORATION_BUILTIN and words[i + 3] in ids:
+            builtins.add(words[i + 1])
+        elif op == OP_CONSTANT and count == 4:
+            values[words[i + 2]] = words[i + 3]
+        elif op == OP_ACCESS_CHAIN and count == 5 and words[i + 3] in builtins and values.get(words[i + 4]) == 2:
+            chains.add(words[i + 2])
+        elif op == OP_LOAD and count >= 4 and words[i + 3] in chains:
+            z.add(words[i + 2])
+        elif op == OP_LOAD and count >= 4 and words[i + 3] in builtins:
+            vectors.add(words[i + 2])
+        elif op == OP_COMPOSITE_EXTRACT and count == 5 and words[i + 3] in vectors and words[i + 4] == 2:
+            z.add(words[i + 2])
+        elif op in (OP_IEQUAL, OP_INOTEQUAL) and count == 5:
+            a, b = words[i + 3], words[i + 4]
+            if (a in z and values.get(b) == 0) or (b in z and values.get(a) == 0):
+                conditions[words[i + 2]] = op == OP_IEQUAL
+    return branch_on_constants(code, words, conditions)
 
 
 def capabilities(code):
@@ -248,19 +295,19 @@ def capabilities(code):
     return found
 
 
-def strip_model_guard(spv):
-    """Remove the code a specialized guard left dead, down to its subgroup capabilities.
+def strip_dead_code(spv, guard_removed):
+    """Remove the code constant branches left dead, down to unused built-ins and capabilities.
 
-    The comparison loop reads the subgroup built-ins, so without this the module
-    still declares GroupNonUniform and GroupNonUniformVote with no subgroup
-    operation, which ps5vk refuses at vkCreateShaderModule.
+    A removed guard's comparison loop reads the subgroup built-ins, so without this
+    the module still declares GroupNonUniform and GroupNonUniformVote with no
+    subgroup operation, which ps5vk refuses at vkCreateShaderModule.
     """
-    subprocess.run([str(TOOLCHAIN_BIN / "spirv-opt"), "--target-env=vulkan1.3", *GUARD_STRIP_PASSES,
+    subprocess.run([str(TOOLCHAIN_BIN / "spirv-opt"), "--target-env=vulkan1.3", *STRIP_PASSES,
                     str(spv), "-o", str(spv)], check=True)
     subprocess.run([str(TOOLCHAIN_BIN / "spirv-val"), "--target-env", "vulkan1.3", str(spv)], check=True)
     code = spv.read_bytes()
     left = capabilities(code) & {CAPABILITY_GROUP_NON_UNIFORM, CAPABILITY_GROUP_NON_UNIFORM_VOTE}
-    if left:
+    if guard_removed and left:
         raise SystemExit(f"{spv.name}: subgroup capabilities {sorted(left)} remain after removing the model guard")
     return code
 
@@ -310,12 +357,13 @@ def main():
                 raise ValueError("Model initializers differ between passes")
             weights = data
         dxil, code = convert(original, source["shader"], index, out, env)
-        if not args.keep_model_guards:
-            specialized = specialize_model_guard(code)
-            if specialized != code:
-                spv = out / f"pass{index}.spv"
-                spv.write_bytes(specialized)
-                code = strip_model_guard(spv)
+        specialized = code if args.keep_model_guards else specialize_model_guard(code)
+        guard_removed = specialized != code
+        specialized = specialize_single_layer(specialized)
+        if specialized != code:
+            spv = out / f"pass{index}.spv"
+            spv.write_bytes(specialized)
+            code = strip_dead_code(spv, guard_removed)
         emit_code(header, index, code, bindings)
         rule = group_rule(index, dispatch, dxil, output)
         passes.append((index, constants_kind(index, dispatch), rule, len(bindings)))
