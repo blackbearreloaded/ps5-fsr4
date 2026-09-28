@@ -54,7 +54,8 @@ enum fsr4_groups {
     FSR4_GROUPS_POSTPASS,     /* ceil(output / 32) */
     FSR4_GROUPS_NETWORK,      /* (ceil(tensor width / 64), tensor height) at a pyramid level */
     FSR4_GROUPS_PADDING,      /* border elements of one tensor, 32 per group */
-    FSR4_GROUPS_RCAS          /* ceil(output / 16) */
+    FSR4_GROUPS_RCAS,         /* ceil(output / 16) */
+    FSR4_GROUPS_NONE          /* not dispatched: a pass whose work the generated kernels made dead */
 };
 
 /* Generated tables define FSR4_HAS_RCAS and fsr4_rcas_pass when the sharpening

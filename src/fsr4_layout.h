@@ -86,6 +86,9 @@ static inline void fsr4_pass_groups(const struct fsr4_layout *l, uint8_t rule, u
     uint32_t extent[2];
     groups[1] = groups[2] = 1;
     switch (rule) {
+    case FSR4_GROUPS_NONE:
+        groups[0] = groups[1] = groups[2] = 0;
+        break;
     case FSR4_GROUPS_SPD:
         groups[0] = fsr4_div_up(render_width, 64);
         groups[1] = fsr4_div_up(render_height, 64);

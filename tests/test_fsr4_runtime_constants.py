@@ -14,7 +14,7 @@ EXPORTS = ROOT / "build/reference-runtime"
 MANIFEST = ROOT / "build/fsr4-runtime/manifest.json"
 VULKAN = VULKAN_HEADERS
 WORDS = {"SPD": 7, "MLSR": 26, "TENSOR": 68, "RCAS": 8}
-RULES = ("SPD", "PREPASS", "POSTPASS", "NETWORK", "PADDING", "RCAS")
+RULES = ("SPD", "PREPASS", "POSTPASS", "NETWORK", "PADDING", "RCAS", "NONE")
 SHARPNESS = {"rcas": 0.4}
 
 
@@ -105,7 +105,7 @@ class RuntimeConstants(unittest.TestCase):
         for frame in range(len(dispatches) // per):
             _, (rw, rh), _ = probe_parameters(scenario, frame, render)
             for index, (rule, tensor, limit_w, limit_h) in enumerate(rules[:per]):
-                if index in replaced:
+                if index in replaced or rule == "NONE":  # not dispatched at all
                     continue
                 groups, luma = (ctypes.c_uint32 * 3)(), (ctypes.c_uint32 * 2)()
                 self.assertEqual(self.lib.fsr4_test_groups(render[0], render[1], ow, oh, rw, rh,

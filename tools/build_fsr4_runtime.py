@@ -27,9 +27,10 @@ from build_fsr4_frame import blob, load_capture  # noqa: E402
 
 PASSES = 28
 # Dispatches compiled as wave64 by default (the tables header carries the set to src/ps5_fsr4.c):
-# network passes 6-11. A looped kernel's weight stream costs as much per wave as per lane-row,
-# so wave64 halves it per pixel (pass 6: 0.090 -> 0.066 ms).
-WAVE64_DEFAULT = (13, 15, 17, 19, 21, 23)
+# network passes 6, 10 and 11. The looped passes 7-9 run faster as wave32 (twice the waves
+# hide their weight loads better: 0.119/0.122/0.182 -> 0.115/0.116/0.170 ms); looped pass 6
+# as wave64 (0.090 -> 0.066 ms).
+WAVE64_DEFAULT = (13, 21, 23)
 # CsTensorSizes rows as pyramid levels (row k holds output / 2^level, rounded up to 8 first).
 FSR4_TENSOR_LEVEL = (1, 0, 1, 1, 2, 2, 2, 3, 3, 3, 2, 2, 1, 1, 0, 0, 0)
 NAMED_ROLES = {
@@ -703,9 +704,10 @@ def main():
                         help="Comma-separated dispatch indices whose converted shader is replaced by a "
                              f"generated packed-i16 kernel (available: {sorted(fsr4_int8_kernels.PASSES)}; "
                              "an empty value keeps every converted shader)")
-    parser.add_argument("--weight-tables", action="store_true",
-                        help="Generated kernels read their weight pairs from tables after the model "
-                             "instead of instruction literals")
+    parser.add_argument("--weight-tables", nargs="?", const="all",
+                        default=",".join(map(str, fsr4_int8_kernels.DEFAULT_TABLES)),
+                        help="Generated kernels (all, or the comma-separated dispatch indices given) read "
+                             "their weight pairs from tables after the model instead of instruction literals")
     parser.add_argument("--int8-banks", default="",
                         help="dispatch:banks pairs, e.g. 13:4: that generated kernel splits its outputs "
                              "over as many workgroup layers")
@@ -773,7 +775,8 @@ def main():
         if index in generated:
             if weights is None:
                 raise ValueError("Model initializers are needed before pass %d" % index)
-            code = generate_kernel(index, weights, bindings, out, tables, args.weight_tables, banked.get(index),
+            use_table = args.weight_tables == "all" or str(index) in args.weight_tables.split(",")
+            code = generate_kernel(index, weights, bindings, out, tables, use_table, banked.get(index),
                                    index in looped)
         if index == fsr4_int8_kernels.POSTPASS and fsr4_int8_kernels.POSTHEAD in generated:
             spv = out / f"pass{index}.spv"
@@ -789,6 +792,10 @@ def main():
         rule = group_rule(index, dispatch, dxil, output)
         if index == fsr4_int8_kernels.POSTHEAD and index in generated:
             rule = ("NETWORK", 1, 0, 0)  # the head runs per H pixel, not over the border
+        elif index == fsr4_int8_kernels.POSTHEAD and args.int8_postpass_head:
+            # Only the postpass head read the border this pass clears; the linked head checks its
+            # own extent, so the pass is not dispatched.
+            rule = ("NONE", 0, 0, 0)
         if index in banked:
             rule = (rule[0], rule[1], banked[index], rule[3])  # output banks as workgroup layers
         passes.append((index, constants_kind(index, dispatch), rule, len(bindings)))

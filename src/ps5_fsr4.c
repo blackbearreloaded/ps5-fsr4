@@ -516,6 +516,8 @@ ps5fsr4_result ps5fsr4_dispatch_passes(ps5fsr4_context *c, const ps5fsr4_dispatc
     for (uint32_t i = first_pass; i < end; ++i) {
         uint32_t groups[3];
         const struct fsr4_pass_info *p = &fsr4_passes[i];
+        if (p->groups == FSR4_GROUPS_NONE)  /* the generated kernels left this pass nothing to do */
+            continue;
         fsr4_pass_groups(&c->layout, p->groups, p->tensor, p->limit_width, p->limit_height,
                          d->render_width, d->render_height, groups);
         if (i > first_pass)

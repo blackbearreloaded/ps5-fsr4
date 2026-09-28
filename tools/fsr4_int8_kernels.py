@@ -394,6 +394,8 @@ PASSES = {
              ([8] * 16 + [9] * 16, [256] * 32)),
     11: block("pass5", 32, (("RB", "Q"), ("RA", "Q")), (17664, 19968, 8), (20096, 22144, 8), (22400, 24448),
               ([8] * 32, [128] * 16 + [256] * 16)),
+    7: dict(name="pass3", kind="down2x2", cin=16, cout=32, weights=8576, bias=10624, shift=7,
+            input=("R0", "H"), output=("RA", "Q")),
     13: dict(name="pass6", kind="down2x2", cin=32, cout=64, weights=24576, bias=32768, shift=8,
              input=("RA", "Q"), output=("RB", "E")),
     15: block("pass7", 64, (("RB", "E"), ("RC", "E")), (33024, 37632, 7), (37760, 45952, 7), (46464, 54656),
@@ -427,7 +429,10 @@ POSTHEAD, POSTPASS = 26, 27
 # (3.30 -> 3.05 ms with wave64). The postpass head runs best inside the postpass, whose
 # image loads it keeps busy: linked in as a function (posthead_function, 3.05 -> 2.90 ms),
 # not split out into dispatch 26 (3.03 ms).
-DEFAULT = (3, 5, 9, 11, 21, 23, 25)
+DEFAULT = (3, 5, 7, 9, 11, 21, 23, 25)
+# Unrolled passes whose weight pairs come from tables after the model (8-byte multiply-adds
+# instead of 12-byte literal ones): the Q-level blocks, whose code outgrows the I-cache.
+DEFAULT_TABLES = (9, 11, 21)
 # Passes with a loop form (fsr4_int8_loops): all but the posthead, whose taps check the extent.
 LOOPED = tuple(index for index, spec in PASSES.items() if "pad_row" not in spec)
 DEFAULT_LOOPS = (13, 15, 17, 19, 23)
