@@ -537,8 +537,8 @@ static int run(void)
             .camera_far = 200.0f, .camera_fov_vertical = 1.0471976f, .reset = reset};
         memory_barrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-        if (frame == 200) {
-            /* One profiled frame. Each pass runs once and then PROFILE_REPEAT
+        if (frame % 300 == 200) {
+            /* A profiled frame every 300. Each pass runs once and then PROFILE_REPEAT
              * times in one submission; the difference divided by the extra runs
              * is its GPU time without the submission round trip. Repeated passes
              * may disturb this frame's history, so the next frame resets it.
@@ -570,7 +570,7 @@ static int run(void)
             if (fr) { report("FSR4_DEMO_ERROR dispatch=%d\n", (int)fr); return 1; }
             if (submit(&fsr_ms)) return 1;
         }
-        reset = frame == 200;  /* the profiled frame disturbed the history */
+        reset = frame % 300 == 200;  /* the profiled frame disturbed the history */
 
         const uint32_t slot = frame & 1;
         const int screenshot = frame >= 300 && frame <= 302;

@@ -102,6 +102,7 @@ static inline void fsr4_pass_groups(const struct fsr4_layout *l, uint8_t rule, u
         fsr4_tensor_extent(l, tensor, extent);
         groups[0] = fsr4_div_up(extent[0], 64);
         groups[1] = extent[1];
+        if (limit_width) groups[2] = limit_width;  /* output-channel banks of a generated kernel */
         break;
     case FSR4_GROUPS_RCAS:
         groups[0] = fsr4_div_up(l->output_width, 16);

@@ -239,8 +239,23 @@ def down2x2(model, spec):
     for ky in range(2):
         for kx in range(2):
             inputs += k.load_bytes(spec["input"][0], spec["input"][1], cin, f"(2u * x + {kx}u)", f"(2u * y + {ky}u)")
-    out = k.layer(inputs, [(-128, 127)] * len(inputs), rows, bias, [spec["shift"]] * cout)
-    k.store_bytes(spec["output"][0], spec["output"][1], out, "x", "y")
+    banks = spec.get("banks")
+    if not banks:
+        out = k.layer(inputs, [(-128, 127)] * len(inputs), rows, bias, [spec["shift"]] * cout)
+        k.store_bytes(spec["output"][0], spec["output"][1], out, "x", "y")
+        return k
+    # One output bank per workgroup layer: a workgroup runs only its bank's code, so the
+    # code the GPU runs at a time (the dispatcher walks z last) fits the instruction cache.
+    per = cout // banks
+    target = k.temp("to")
+    k.emit(f"uint {target} = {k.tensor_index(spec['output'][0], spec['output'][1], 'x', 'y')};")
+    for bank in range(banks):
+        k.emit(f"{'if' if bank == 0 else '} else if'} (gl_WorkGroupID.z == {bank}u) {{")
+        out = k.layer(inputs, [(-128, 127)] * len(inputs), rows[bank * per:(bank + 1) * per],
+                      bias[bank * per:(bank + 1) * per], [spec["shift"]] * per)
+        for part in range(per // 16):
+            k.store_bank(target, spec["output"][1], bank * per // 16 + part, out[part * 16:(part + 1) * 16])
+    k.emit("}")
     return k
 
 
@@ -390,9 +405,10 @@ DEFAULT = (3, 5, 9, 11, 21, 23, 25)
 BINDINGS = {"WEIGHTS": "model", "SCRATCH": "scratch", "CONSTANTS": "tensor"}
 
 
-def generate(index, model, bindings, table=None):
+def generate(index, model, bindings, table=None, banks=None):
     """GLSL source of the packed kernel replacing dispatch `index`, its group count and, with a
-    `table` dword index into the model buffer, the weight-pair words it reads from there."""
-    spec = dict(PASSES[index], table=table)
+    `table` dword index into the model buffer, the weight-pair words it reads from there.
+    `banks` splits the outputs over that many workgroup layers (kinds that support it)."""
+    spec = dict(PASSES[index], table=table, banks=banks)
     kernel = GENERATORS[spec["kind"]](model, spec)
     return kernel.source([(s, b, BINDINGS[role]) for s, b, _, role in bindings]), kernel.groups, kernel.pairs

@@ -93,8 +93,9 @@ class RuntimeConstants(unittest.TestCase):
             self.skipTest("generated runtime tables unavailable")
         manifest = json.loads(MANIFEST.read_text())
         rules = [p["groups"] for p in manifest["passes"]]
-        # A generated postpass head runs per H pixel in place of the captured border clear.
-        replaced = {26} & set(manifest.get("int8_kernels", []))
+        # A generated postpass head runs per H pixel in place of the captured border clear, and
+        # banked generated kernels add workgroup layers.
+        replaced = ({26} & set(manifest.get("int8_kernels", []))) | {int(k) for k in manifest.get("int8_banks", {})}
         _, graph, dispatches, (ow, oh), render = self.load(name)
         names = {r["resourceId"]: r["name"] for r in graph["resources"]}
         sizes = {names[t["resourceId"]]: (t["width"], t["height"]) for t in graph["textures"]}

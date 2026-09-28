@@ -72,7 +72,8 @@ struct fsr4_pass_info {
     const struct fsr4_binding *bindings;
     uint8_t groups;           /* enum fsr4_groups */
     uint8_t tensor;           /* NETWORK: pyramid level; PADDING: CsTensorSizes row */
-    uint16_t limit_width;     /* PADDING: allocated tensor width + 1 compiled into the shader */
+    uint16_t limit_width;     /* PADDING: allocated tensor width + 1 compiled into the shader;
+                                 NETWORK: output-channel banks (workgroup z) when nonzero */
     uint16_t limit_height;    /* PADDING: allocated tensor height + 1 */
 };
 

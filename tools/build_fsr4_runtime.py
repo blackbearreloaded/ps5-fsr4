@@ -470,15 +470,16 @@ def strip_dead_code(spv, guard_removed):
     return code
 
 
-def generate_kernel(index, model, bindings, out, tables=None):
+def generate_kernel(index, model, bindings, out, tables=None, banks=None):
     """Packed-i16 kernel for dispatch `index`, compiled to validated SPIR-V; returns its words.
 
     With `tables` (the weight-pair words already placed after the model), a kernel that
-    binds the model reads its weight pairs from a table appended there."""
+    binds the model reads its weight pairs from a table appended there. `banks` splits its
+    outputs over that many workgroup layers."""
     table = None
     if tables is not None and any(role == "WEIGHTS" for _, _, _, role in bindings):
         table = (len(model) + 3) // 4 + len(tables)
-    source, groups, pairs = fsr4_int8_kernels.generate(index, model, bindings, table)
+    source, groups, pairs = fsr4_int8_kernels.generate(index, model, bindings, table, banks)
     if tables is not None:
         tables += pairs
     glsl, spv = out / f"pass{index}.comp", out / f"pass{index}.spv"
@@ -514,9 +515,15 @@ def main():
     parser.add_argument("--weight-tables", action="store_true",
                         help="Generated kernels read their weight pairs from tables after the model "
                              "instead of instruction literals")
+    parser.add_argument("--int8-banks", default="",
+                        help="dispatch:banks pairs, e.g. 13:4: that generated kernel splits its outputs "
+                             "over as many workgroup layers")
     args = parser.parse_args()
     generated = {int(i) for i in args.int8_kernels.split(",") if i}
     tables = [] if args.weight_tables else None
+    banked = {int(k): int(v) for k, v in (item.split(":") for item in args.int8_banks.split(",") if item)}
+    if set(banked) - generated:
+        raise SystemExit(f"banks given for dispatches that are not generated: {sorted(set(banked) - generated)}")
     if generated - set(fsr4_int8_kernels.PASSES):
         raise SystemExit(f"no generated kernel for dispatch {sorted(generated - set(fsr4_int8_kernels.PASSES))}")
     capture, original = args.capture.resolve(), args.original.resolve()
@@ -556,7 +563,7 @@ def main():
         if index in generated:
             if weights is None:
                 raise ValueError("Model initializers are needed before pass %d" % index)
-            code = generate_kernel(index, weights, bindings, out, tables)
+            code = generate_kernel(index, weights, bindings, out, tables, banked.get(index))
         if index == fsr4_int8_kernels.POSTPASS and fsr4_int8_kernels.POSTHEAD in generated:
             spv = out / f"pass{index}.spv"
             spv.write_bytes(remove_dead_code(route_postpass_latent(code, LATENT_OFFSET)))
@@ -568,6 +575,8 @@ def main():
         rule = group_rule(index, dispatch, dxil, output)
         if index == fsr4_int8_kernels.POSTHEAD and index in generated:
             rule = ("NETWORK", 1, 0, 0)  # the head runs per H pixel, not over the border
+        if index in banked:
+            rule = (rule[0], rule[1], banked[index], rule[3])  # output banks as workgroup layers
         passes.append((index, constants_kind(index, dispatch), rule, len(bindings)))
         identities.append(dict(index=index, entry=dispatch["entryPoint"], dxil_sha256=sha(dxil.read_bytes()),
                                spirv_sha256=sha(code), constants=passes[-1][1], bindings=bindings,
@@ -616,6 +625,7 @@ def main():
                     original_graph_sha256=json.loads((original / "complete.json").read_text())["graph_sha256"],
                     fp32_fma=args.fp32_fma, model_guards=bool(args.keep_model_guards),
                     int8_kernels=sorted(generated), weight_table_words=len(tables or []),
+                    int8_banks={str(k): v for k, v in sorted(banked.items())},
                     weights_sha256=sha(weights), table_sha256=sha(table.encode()),
                     converter_patch_sha256=sha((ROOT / "tools/dxil-spirv-fsr4-fp16.patch").read_bytes()),
                     passes=identities)
