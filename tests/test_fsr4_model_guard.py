@@ -58,7 +58,7 @@ class ModelGuard(unittest.TestCase):
             text = subprocess.run([tools[2], str(spv)], check=True, capture_output=True, text=True).stdout
             self.assertNotIn("OpGroupNonUniformAll", text)
             self.assertIn("OpConstantTrue %bool", text)
-            self.assertRegex(text, r"%vote = OpCopyObject %bool %\w+")
+            self.assertIn("= OpCopyObject %bool %true", text)
 
 
 if __name__ == "__main__":
