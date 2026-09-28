@@ -1,11 +1,10 @@
 # PS5 FSR4
 
 > [!WARNING]
-> **Experimental — work in progress. This project is not fully working yet.**
-> Native PS5 tests can execute the FSR4 graph, but image correctness and
-> temporal stability remain unresolved. The reusable SDK, graphical demo and
-> target-resolution performance are not yet qualified.
-> Current code are research progress, not a ready-to-use release.
+> **Experimental.** FSR4 runs natively on the PS5 and passes its acceptance
+> against the WARP reference in every captured scenario, but this is not a
+> release. The SDK is built locally from reference exports of the FSR4
+> provider, and it needs a diagnostic profile of the Vulkan driver.
 
 > [!IMPORTANT]
 > **Primary FSR4 porting credit: the BC250 FSR4 project.**
@@ -22,13 +21,22 @@ being developed toward a reusable **FSR 4.1.1 INT8 SDK for native PS5 homebrew**
 The imported Vulkan code is copyright its original authors. This project is
 maintained by BlackBearReloaded and is independent of the upstream project.
 
-**Status:** Experimental. Captured FSR4 graphs execute natively, but image
-correctness and temporal stability remain unresolved. The reusable FSR SDK
-and target-resolution performance are still under development.
+**Status:** Experimental.
+
+- The `ps5_fsr4` runtime upscales 1280×720 to 1920×1080 on the PS5 in about
+  8 ms per frame.
+- Every captured scenario is accepted: static, motion, camera cut, SDR,
+  dynamic resolution, several output sizes and the 1080p target
+  ([validation](VALIDATION.md#fsr4-acceptance)).
+- An interactive demo renders a scene, upscales it and presents it at 60 fps.
+- `tools/build_fsr4_sdk.py` stages the SDK: `libps5_fsr4.a`, its header,
+  notices and a warmed pipeline cache ([FSR4 SDK](docs/FSR4_SDK.md)).
 
 ## Development
 
 - [Build instructions](BUILDING.md)
+- [FSR4 SDK](docs/FSR4_SDK.md)
+- [Validation](VALIDATION.md)
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md)
 - [Reference tools](docs/FSR4_REFERENCE_RUNTIME.md)
 - [Vulkan API](API.md)
