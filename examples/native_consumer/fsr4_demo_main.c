@@ -528,23 +528,40 @@ static int run(void)
             .camera_far = 200.0f, .camera_fov_vertical = 1.0471976f, .reset = reset};
         memory_barrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-        if (frame == 200) {  /* one profiled frame: each pass in its own submission */
+        if (frame == 200) {
+            /* One profiled frame. Each pass runs once and then PROFILE_REPEAT
+             * times in one submission; the difference divided by the extra runs
+             * is its GPU time without the submission round trip. Repeated passes
+             * may disturb this frame's history, so the next frame resets it.
+             * Pass 0 writes the frame's descriptors, which must not change while
+             * a recording command buffer uses them, so it runs only once. */
+            enum { PROFILE_REPEAT = 8 };
             fsr_ms = 0;
             for (uint32_t pass = 0; pass < ps5fsr4_pass_count(); ++pass) {
-                double pass_ms;
-                if (pass && begin()) return 1;
-                fr = ps5fsr4_dispatch_passes(context, &dd, pass, 1);
-                if (fr) { report("FSR4_DEMO_ERROR dispatch=%d\n", (int)fr); return 1; }
-                if (submit(&pass_ms)) return 1;
-                fsr_ms += pass_ms;
-                report("FSR4_DEMO_PASS index=%u ms=%.3f\n", pass, pass_ms);
+                const int repeat = pass ? PROFILE_REPEAT : 1;
+                double once_ms = 0, repeated_ms = 0;
+                for (int runs = 1; runs <= repeat; runs += PROFILE_REPEAT - 1) {
+                    if ((pass || runs > 1) && begin()) return 1;
+                    for (int i = 0; i < runs; ++i) {
+                        fr = ps5fsr4_dispatch_passes(context, &dd, pass, 1);
+                        if (fr) { report("FSR4_DEMO_ERROR dispatch=%d\n", (int)fr); return 1; }
+                        if (i + 1 < runs)
+                            memory_barrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT |
+                                           VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+                    }
+                    if (submit(runs == 1 ? &once_ms : &repeated_ms)) return 1;
+                }
+                const double gpu_ms = pass ? (repeated_ms - once_ms) / (PROFILE_REPEAT - 1) : -1.0;
+                fsr_ms += once_ms;
+                report("FSR4_DEMO_PASS index=%u gpu_ms=%.3f submit_ms=%.3f\n", pass, gpu_ms, once_ms - gpu_ms);
             }
         } else {
             fr = ps5fsr4_dispatch(context, &dd);
             if (fr) { report("FSR4_DEMO_ERROR dispatch=%d\n", (int)fr); return 1; }
             if (submit(&fsr_ms)) return 1;
         }
-        reset = 0;
+        reset = frame == 200;  /* the profiled frame disturbed the history */
 
         const uint32_t slot = frame & 1;
         const int screenshot = frame >= 300 && frame <= 302;

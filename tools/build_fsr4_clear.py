@@ -88,7 +88,7 @@ def buffer_chain(graph):
             raise ValueError("Invalid dispatch dimensions")
     return records
 
-def build_native_app(out, source_file, title_name, extra_sources=(), include_dirs=()):
+def build_native_app(out, source_file, title_name, extra_sources=(), include_dirs=(), libraries=()):
     """Use the same native template, heap and public SDK for both witnesses."""
     foundation, sdk, compiler, builder, gears = native_inputs()
     env = dict(os.environ, PS5_PAYLOAD_SDK=str(sdk))
@@ -121,7 +121,7 @@ def build_native_app(out, source_file, title_name, extra_sources=(), include_dir
                     "-e", "_start", "-o", str(pie), str(crt), *map(str, objects), str(heap),
                     *["--wrap=" + name for name in ("malloc", "calloc", "realloc", "free",
                       "posix_memalign", "memalign", "aligned_alloc", "malloc_usable_size")],
-                    str(DIST_SDK / "lib/libps5vk.a"), str(DIST_SDK / "lib/libpsbc.a"),
+                    *map(str, libraries), str(DIST_SDK / "lib/libps5vk.a"), str(DIST_SDK / "lib/libpsbc.a"),
                     *[str(sdk / "target/lib" / n) for n in
                       ("libc++.a", "libc++abi.a", "libunwind.a", "libc.a")],
                     "--as-needed", str(sdk / "target/lib/libkernel.so"),

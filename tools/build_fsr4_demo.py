@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Build the interactive native FSR4 demo (PPSA88900) on the ps5_fsr4 runtime."""
+"""Build the interactive native FSR4 demo (PPSA88900) against the staged ps5_fsr4 SDK.
+
+Stage the SDK first with tools/build_sdk.py and tools/build_fsr4_sdk.py; the demo
+uses only its public headers, archives and warmed pipeline cache.
+"""
 import argparse
 import json
 import os
@@ -12,6 +16,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+from build_consumer import DIST_SDK  # noqa: E402
 from build_fsr4_clear import build_native_app  # noqa: E402
 
 SHADERS = ("scene.comp", "present.comp", "blit.vert", "blit.frag")
@@ -24,11 +29,13 @@ def glslang():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runtime", type=Path, default=ROOT / "build/fsr4-runtime",
-                        help="Generated FSR4 pass tables (tools/build_fsr4_runtime.py)")
-    parser.add_argument("--pipeline-cache", type=Path, help="Pipeline cache data from an earlier run on this driver")
+    parser.add_argument("--pipeline-cache", type=Path, default=DIST_SDK / "share/ps5fsr4/pipeline-cache-ps5.bin",
+                        help="Pipeline cache data from an earlier run on this driver")
     parser.add_argument("--out", type=Path, default=ROOT / "build/fsr4-demo")
     args = parser.parse_args()
+    library = DIST_SDK / "lib/libps5_fsr4.a"
+    if not library.is_file():
+        raise SystemExit(f"{library} is missing; run tools/build_fsr4_sdk.py")
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     header = ["#include <stdint.h>"]
@@ -44,13 +51,12 @@ def main():
     assets = out / "PPSA88900/assets"
     assets.mkdir(parents=True, exist_ok=True)
     cache = assets / "pipeline-cache.bin"
-    if args.pipeline_cache:
+    if args.pipeline_cache and args.pipeline_cache.is_file():
         cache.write_bytes(args.pipeline_cache.read_bytes())
     elif cache.exists():
         cache.unlink()
     build_native_app(out, ROOT / "examples/native_consumer/fsr4_demo_main.c", "FSR4 Native Demo",
-                     extra_sources=[ROOT / "src/fsr4/ps5_fsr4.c"],
-                     include_dirs=[ROOT / "include", ROOT / "src/fsr4", args.runtime.resolve()])
+                     libraries=[library])
     print(json.dumps(dict(package=str(out / "PPSA88900"), pipeline_cache=cache.exists()), indent=2))
 
 
