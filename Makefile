@@ -5,6 +5,9 @@
 PYTHON ?= python3
 CC ?= cc
 DRIVER ?= external/ps5-vulkan
+DRIVER_URL ?= https://github.com/blackbearreloaded/ps5-vulkan.git
+# The driver revision this checkout pins (its submodule commit); empty outside git.
+DRIVER_REV ?= $(shell git ls-tree HEAD $(DRIVER) 2>/dev/null | awk '{print $$3}')
 DXIL_SPIRV_DIR ?= ../references/dxil-spirv
 # The driver profile FSR4 needs: INT8/INT16 shader arithmetic, the subgroup vote,
 # subgroup size control and target-size sampled storage images.
@@ -12,18 +15,32 @@ DRIVER_PROFILE = PS5VK_SHADER_INT8_DIAGNOSTIC=1 PS5VK_SHADER_INT16_DIAGNOSTIC=1 
 	PS5VK_SUBGROUP_ALL_DIAGNOSTIC=1 PS5VK_EXTENDED_COMPUTE_DIAGNOSTIC=1
 VULKAN_CFLAGS = -I$(DRIVER)/third_party/vulkan-headers/include
 
-.PHONY: all driver driver-deps driver-psbc driver-sdk fsr4-dxil-converter runtime sdk demo check
+.PHONY: all driver driver-source driver-headers driver-deps driver-psbc driver-sdk fsr4-dxil-converter runtime sdk demo check
 all: sdk
+
+# Fetch the driver when it is missing: the pinned submodule in a git checkout,
+# otherwise a clone of DRIVER_URL at DRIVER_REV (or its default branch).
+driver-source: $(DRIVER)/Makefile
+$(DRIVER)/Makefile:
+	@if [ -n "$(DRIVER_REV)" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
+		git submodule update --init -- $(DRIVER); \
+	else \
+		rmdir $(DRIVER) 2>/dev/null || true; \
+		git clone $(DRIVER_URL) $(DRIVER) && \
+		{ [ -z "$(DRIVER_REV)" ] || git -C $(DRIVER) checkout -q $(DRIVER_REV); }; \
+	fi
+driver-headers: | $(DRIVER)/Makefile
+	$(MAKE) -C $(DRIVER) vulkan-headers
 
 # Driver: pinned dependencies, the PSBC compiler (PS5 and host), then its staged SDK.
 driver: driver-deps driver-psbc driver-sdk
-driver-deps:
+driver-deps: | $(DRIVER)/Makefile
 	$(MAKE) -C $(DRIVER) vulkan-headers native-deps compiler-deps
-driver-psbc:
+driver-psbc: | $(DRIVER)/Makefile
 	cd $(DRIVER) && $(PYTHON) tools/build_psbc.py --target ps5 && $(PYTHON) tools/build_psbc.py --host
-driver-sdk:
+driver-sdk: | $(DRIVER)/Makefile
 	cd $(DRIVER) && $(DRIVER_PROFILE) $(PYTHON) tools/build_sdk.py
-$(DRIVER)/build/libpsbc.host.a:
+$(DRIVER)/build/libpsbc.host.a: | $(DRIVER)/Makefile
 	cd $(DRIVER) && $(PYTHON) tools/build_psbc.py --host
 
 # Offline converter for the exact captured shaders. This dependency is host-only.
@@ -41,7 +58,7 @@ fsr4-dxil-converter:
 # The driver SDK is restaged first because the driver's own tests restage it without the profile.
 runtime: fsr4-dxil-converter
 	$(PYTHON) tools/build_fsr4_runtime.py
-sdk: driver-sdk runtime
+sdk: driver runtime
 	$(PYTHON) tools/build_fsr4_sdk.py
 demo:
 	$(PYTHON) tools/build_fsr4_demo.py
@@ -58,7 +75,7 @@ fsr4-provider-inventory:
 fsr4-poststage-audit:
 	$(PYTHON) tools/fsr4_poststage_audit.py
 
-build/fsr4_compile_probe: tools/fsr4_compile_probe.c $(DRIVER)/src/ps5vk_compiler.c $(DRIVER)/build/libpsbc.host.a
+build/fsr4_compile_probe: tools/fsr4_compile_probe.c | $(DRIVER)/Makefile $(DRIVER)/build/libpsbc.host.a
 	mkdir -p build
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(VULKAN_CFLAGS) -I$(DRIVER)/src -I$(DRIVER)/include \
 		-I$(DRIVER)/third_party/opengnm/include -I$(DRIVER)/third_party/psbc-reference \
@@ -67,5 +84,5 @@ build/fsr4_compile_probe: tools/fsr4_compile_probe.c $(DRIVER)/src/ps5vk_compile
 
 # Host tests. Tests that need the local reference exports, the converter or the
 # payload SDK skip when those inputs are absent.
-check:
+check: driver-headers
 	$(PYTHON) -m unittest discover -s tests -p "test_fsr4_*.py"

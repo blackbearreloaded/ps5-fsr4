@@ -16,12 +16,15 @@
 ## Build
 
 ```sh
-git submodule update --init
 make driver   # pinned driver dependencies, PSBC (PS5 and host), driver SDK with the FSR4 profile
 make sdk      # converter, pass tables, then dist-sdk: the driver SDK plus libps5_fsr4.a
 make demo     # PPSA88900 interactive demo against dist-sdk
 make check    # host tests
 ```
+
+`make` fetches the driver when `external/ps5-vulkan` is missing: the pinned
+submodule in a git checkout, otherwise a clone of `DRIVER_URL` at that
+revision (or its default branch when the revision is unknown).
 
 `make driver-sdk` stages the driver SDK with the profile FSR4 needs:
 `PS5VK_SHADER_INT8_DIAGNOSTIC`, `PS5VK_SHADER_INT16_DIAGNOSTIC`,

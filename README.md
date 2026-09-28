@@ -39,13 +39,14 @@ This project is independent of the upstream driver project.
 | --- | --- |
 | `include/ps5fsr4/` | Public C API |
 | `src/` | Runtime: context, dispatch, constants and pass tables |
-| `tools/` | Shader converter, reference exports, runtime/SDK/app builders, acceptance, benchmark |
+| `tools/` | Shader converter, reference exports, runtime/SDK/app builders, acceptance |
 | `tests/` | Host tests |
-| `examples/` | Runtime test, interactive demo, replay witnesses, GPU benchmark |
+| `examples/` | Runtime test, interactive demo and replay witnesses |
 | `docs/` | SDK guide, reference procedure, research notes |
 | `external/ps5-vulkan/` | The Vulkan driver (submodule) |
 
-Clone with `git clone --recurse-submodules`, then follow [BUILDING.md](BUILDING.md).
+Clone with `git clone --recurse-submodules`, or let `make` fetch the driver, then
+follow [BUILDING.md](BUILDING.md).
 
 ## Development
 
