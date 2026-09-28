@@ -67,4 +67,4 @@ build/fsr4_compile_probe: tools/fsr4_compile_probe.c $(DRIVER)/src/ps5vk_compile
 # Host tests. Tests that need the local reference exports, the converter or the
 # payload SDK skip when those inputs are absent.
 check:
-	$(PYTHON) -m unittest discover -s tests -t . -p "test_fsr4_*.py"
+	$(PYTHON) -m unittest discover -s tests -p "test_fsr4_*.py"
