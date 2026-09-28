@@ -1,81 +1,83 @@
 diff --git a/dxil_converter.cpp b/dxil_converter.cpp
-index ebb1be9..bca07c1 100644
+index ebb1be9e..32fbf020 100644
 --- a/dxil_converter.cpp
 +++ b/dxil_converter.cpp
-@@ -6015,6 +6015,51 @@ bool Converter::Impl::support_native_fp16_operations() const
- 	return execution_mode_meta.native_16bit_operations || options.min_precision_prefer_native_16bit;
- }
- 
-+#ifdef PS5_FSR4_REFERENCE_FP16
-+// A texture-result convert/extend pair can retain FP32 precision on Vulkan.
-+// Quantize normal values explicitly; round the subnormal interval in FP32
-+// because OpQuantizeToF16 is permitted to flush FP16 subnormals to zero.
-+static spv::Id fsr4_rte_fp16_input(Converter::Impl &impl, spv::Id input, unsigned components)
-+{
-+    auto &b = impl.builder();
-+    auto type = [&](spv::Id scalar) {
-+        return components == 1 ? scalar : b.makeVectorType(scalar, components);
-+    };
-+    auto constant = [&](spv::Id scalar, spv::Id scalar_type) {
-+        return components == 1 ? scalar :
-+            b.makeCompositeConstant(type(scalar_type), Vector<spv::Id>(components, scalar));
-+    };
-+    auto u32 = type(b.makeUintType(32));
-+    auto f32 = type(b.makeFloatType(32));
-+    auto boolean = type(b.makeBoolType());
-+    auto u = [&](uint32_t value) { return constant(b.makeUintConstant(value), b.makeUintType(32)); };
-+    auto f = [&](float value) { return constant(b.makeFloatConstant(value), b.makeFloatType(32)); };
-+    auto op = [&](spv::Op code, spv::Id result_type, std::initializer_list<spv::Id> ids) {
-+        auto *value = impl.allocate(code, result_type);
-+        for (auto id : ids) value->add_id(id);
-+        impl.add(value);
-+        return value->id;
-+    };
-+    auto bits = op(spv::OpBitcast, u32, {input});
-+    auto magnitude = op(spv::OpBitwiseAnd, u32, {bits, u(0x7fffffffu)});
-+    auto small = op(spv::OpULessThan, boolean, {magnitude, u(0x38800000u)});
-+    auto scaled = op(spv::OpFMul, f32, {op(spv::OpBitcast, f32, {magnitude}), f(16777216.0f)});
-+    if (!impl.glsl_std450_ext)
-+        impl.glsl_std450_ext = b.import("GLSL.std.450");
-+    auto *round = impl.allocate(spv::OpExtInst, f32);
-+    round->add_id(impl.glsl_std450_ext);
-+    round->add_literal(GLSLstd450RoundEven);
-+    round->add_id(scaled);
-+    impl.add(round);
-+    auto subnormal = op(spv::OpFMul, f32, {round->id, f(0x1p-24f)});
-+    auto signed_bits = op(spv::OpBitwiseOr, u32, {
-+        op(spv::OpBitcast, u32, {subnormal}),
-+        op(spv::OpBitwiseAnd, u32, {bits, u(0x80000000u)})});
-+    auto quantized = op(spv::OpQuantizeToF16, f32, {input});
-+    return op(spv::OpSelect, f32, {small, op(spv::OpBitcast, f32, {signed_bits}), quantized});
-+}
-+#endif
-+
- spv::Id Converter::Impl::build_value_cast(spv::Id value_id,
-                                           DXIL::ComponentType input_type,
-                                           DXIL::ComponentType output_type,
-@@ -6064,6 +6109,10 @@ spv::Id Converter::Impl::build_value_cast(spv::Id value_id,
- 		}
- 	}
- 
-+#ifdef PS5_FSR4_REFERENCE_FP16
-+    if (input_type == DXIL::ComponentType::F32 && output_type == DXIL::ComponentType::F16)
-+        value_id = fsr4_rte_fp16_input(*this, value_id, components);
-+#endif
+@@ -6067,6 +6067,12 @@ spv::Id Converter::Impl::build_value_cast(spv::Id value_id,
  	Operation *op = allocate(opcode, get_type_id(output_type, 1, components));
  	op->add_id(value_id);
  	add(op);
++#ifdef PS5_FSR4_REFERENCE_FP16
++	// An inexact extension is folded with a preceding FP32 -> FP16 conversion,
++	// which then keeps FP32 precision.
++	if (input_type == DXIL::ComponentType::F16 && output_type == DXIL::ComponentType::F32)
++		add_nocontract_decoration(*this, op->id);
++#endif
+ 	return op->id;
+ }
+ 
+@@ -7720,6 +7726,14 @@ void Converter::Impl::emit_execution_modes_post_code_generation()
+ 			b.addExtension("SPV_KHR_float_controls");
+ 			b.addCapability(spv::CapabilityDenormPreserve);
+ 			b.addExecutionMode(spirv_module.get_entry_function(), spv::ExecutionModeDenormPreserve, 16);
++#ifdef PS5_FSR4_REFERENCE_FP16
++			// FP32 -> FP16 conversions round to nearest even like the reference.
++			// A declared mode also keeps a converted texture result in FP32:
++			// compilers fold a conversion of undefined rounding into a 16-bit
++			// texture result, whose rounding the reference does not share.
++			b.addCapability(spv::CapabilityRoundingModeRTE);
++			b.addExecutionMode(spirv_module.get_entry_function(), spv::ExecutionModeRoundingModeRTE, 16);
++#endif
+ 		}
+ 		else if (!options.supports_float16_denorm_preserve && options.quirks.force_denorm_preserve_fp16_conversions)
+ 		{
 diff --git a/opcodes/dxil/dxil_arithmetic.cpp b/opcodes/dxil/dxil_arithmetic.cpp
-index fe1ad4c..210497e 100644
+index fe1ad4cc..767e154b 100644
 --- a/opcodes/dxil/dxil_arithmetic.cpp
 +++ b/opcodes/dxil/dxil_arithmetic.cpp
-@@ -1236,7 +1236,20 @@ bool emit_dot2_add_half_instruction(Converter::Impl &impl, const llvm::CallInst
+@@ -1236,7 +1236,57 @@ bool emit_dot2_add_half_instruction(Converter::Impl &impl, const llvm::CallInst
  		return true;
  	}
  
 +#ifdef PS5_FSR4_REFERENCE_FP16
-+    // The WARP reference multiplies the exact half inputs in FP32. Select
-+    // that permitted dot2add precision explicitly instead of half products.
++    // The WARP reference multiplies the exact half inputs in FP32. A product
++    // of two halves is exact in FP32, so a fused multiply-add rounds exactly
++    // like the separate product and sum. Fix the order the reassociating
++    // Vulkan compilers pick, (acc + x product) + y product, and skip a product
++    // with a constant zero operand as they do.
++    if (!precise)
++    {
++        auto is_zero = [](const llvm::Value *value) {
++            const auto *constant = llvm::dyn_cast<llvm::ConstantFP>(value);
++            return constant && (constant->getValueAPF().bitcastToAPInt().getZExtValue() & 0x7fff) == 0;
++        };
++        if (!impl.glsl_std450_ext)
++            impl.glsl_std450_ext = builder.import("GLSL.std.450");
++        spv::Id acc = impl.get_id_for_value(instruction->getOperand(1));
++        unsigned last = is_zero(instruction->getOperand(3)) || is_zero(instruction->getOperand(5)) ? 0 : 1;
++        for (unsigned i = 0; i <= last; i++)
++        {
++            spv::Id factors[2];
++            for (unsigned j = 0; j < 2; j++)
++            {
++                auto *extend = impl.allocate(spv::OpFConvert, float_type_id);
++                extend->add_id(j ? bs[i] : as[i]);
++                impl.add(extend);
++                add_nocontract_decoration(impl, extend->id);
++                factors[j] = extend->id;
++            }
++            auto *fma = i == last ? impl.allocate(spv::OpExtInst, instruction) :
++                                    impl.allocate(spv::OpExtInst, float_type_id);
++            fma->add_id(impl.glsl_std450_ext);
++            fma->add_literal(GLSLstd450Fma);
++            fma->add_id(factors[0]);
++            fma->add_id(factors[1]);
++            fma->add_id(acc);
++            impl.add(fma);
++            add_nocontract_decoration(impl, fma->id);
++            acc = fma->id;
++        }
++        return true;
++    }
 +    for (auto *value : {&a, &b})
 +    {
 +        auto *extend = impl.allocate(spv::OpFConvert, builder.makeVectorType(float_type_id, 2));
@@ -90,7 +92,7 @@ index fe1ad4c..210497e 100644
  	dot_op->add_id(a);
  	dot_op->add_id(b);
  	impl.add(dot_op);
-@@ -1244,6 +1257,7 @@ bool emit_dot2_add_half_instruction(Converter::Impl &impl, const llvm::CallInst
+@@ -1244,6 +1294,7 @@ bool emit_dot2_add_half_instruction(Converter::Impl &impl, const llvm::CallInst
  		add_nocontract_decoration(impl, dot_op->id);
  
  	spv::Id expanded_input = dot_op->id;
@@ -98,7 +100,7 @@ index fe1ad4c..210497e 100644
  	if (impl.support_native_fp16_operations())
  	{
  		auto *extend_op = impl.allocate(spv::OpFConvert, builder.makeVectorType(float_type_id, 2));
-@@ -1252,6 +1266,8 @@ bool emit_dot2_add_half_instruction(Converter::Impl &impl, const llvm::CallInst
+@@ -1252,6 +1303,8 @@ bool emit_dot2_add_half_instruction(Converter::Impl &impl, const llvm::CallInst
  		expanded_input = extend_op->id;
  	}
  
@@ -108,7 +110,7 @@ index fe1ad4c..210497e 100644
  	for (unsigned i = 0; i < 2; i++)
  	{
 diff --git a/opcodes/opcodes_llvm_builtins.cpp b/opcodes/opcodes_llvm_builtins.cpp
-index 4a7f235..a2b3574 100644
+index 4a7f2350..b1c225c6 100644
 --- a/opcodes/opcodes_llvm_builtins.cpp
 +++ b/opcodes/opcodes_llvm_builtins.cpp
 @@ -32,6 +32,9 @@
@@ -176,53 +178,56 @@ index 4a7f235..a2b3574 100644
  	bool signed_input = false;
  	bool is_width_sensitive = false;
  	bool is_precision_sensitive = false;
-@@ -1213,6 +1261,45 @@ static spv::Id emit_special_non_native_packing_bitcast(Converter::Impl &, const
+@@ -1213,6 +1261,48 @@ static spv::Id emit_special_non_native_packing_bitcast(Converter::Impl &, const
  	return 0;
  }
  
 +#ifdef PS5_FSR4_REFERENCE_FP16
 +// Match the captured D3D12 reference's scalar FP32 -> FP16 RTZ conversion.
-+// Mask in FP32 before conversion: a convert/extend/compare correction can be
-+// folded away by Vulkan drivers. Every finite result below is exactly FP16
-+// representable, including subnormals, signed zero and overflow saturation.
++// Round to nearest even in FP16, then step the result one unit toward zero
++// where that rounding increased the magnitude. This is RTZ for subnormals,
++// signed zero and NaN too, and an overflowing infinity steps back to the
++// largest finite value. The FP32 result is exactly FP16-representable.
 +static spv::Id fsr4_rtz_fp16_input(Converter::Impl &impl, spv::Id input)
 +{
 +    auto &b = impl.builder();
-+    auto u32 = b.makeUintType(32);
++    b.addCapability(spv::CapabilityFloat16);
++    b.addCapability(spv::CapabilityInt16);
++    auto f16 = b.makeFloatType(16);
 +    auto f32 = b.makeFloatType(32);
-+    auto boolean = b.makeBoolType();
-+    auto c = [&](uint32_t value) { return b.makeUintConstant(value); };
++    auto u16 = b.makeUintType(16);
 +    auto op = [&](spv::Op code, spv::Id type, std::initializer_list<spv::Id> ids) {
 +        auto *value = impl.allocate(code, type);
 +        for (auto id : ids) value->add_id(id);
 +        impl.add(value);
 +        return value->id;
 +    };
-+    auto bits = op(spv::OpBitcast, u32, {input});
-+    auto sign = op(spv::OpBitwiseAnd, u32, {bits, c(0x80000000u)});
-+    auto exponent = op(spv::OpBitwiseAnd, u32,
-+        {op(spv::OpShiftRightLogical, u32, {bits, c(23)}), c(255)});
-+    auto subnormal = op(spv::OpULessThan, boolean, {exponent, c(113)});
-+    auto shift = op(spv::OpBitwiseAnd, u32,
-+        {op(spv::OpISub, u32, {c(126), exponent}), c(31)});
-+    shift = op(spv::OpSelect, u32, {subnormal, shift, c(13)});
-+    auto mask = op(spv::OpShiftLeftLogical, u32, {c(0xffffffffu), shift});
-+    auto truncated = op(spv::OpBitwiseAnd, u32, {bits, mask});
-+    auto tiny = op(spv::OpULessThan, boolean, {exponent, c(103)});
-+    truncated = op(spv::OpSelect, u32, {tiny, sign, truncated});
-+    auto overflow = op(spv::OpUGreaterThan, boolean, {exponent, c(142)});
-+    auto largest = op(spv::OpBitwiseOr, u32, {sign, c(0x477fe000u)});
-+    truncated = op(spv::OpSelect, u32, {overflow, largest, truncated});
-+    auto special = op(spv::OpIEqual, boolean, {exponent, c(255)});
-+    truncated = op(spv::OpSelect, u32, {special, bits, truncated});
-+    return op(spv::OpBitcast, f32, {truncated});
++    if (!impl.glsl_std450_ext)
++        impl.glsl_std450_ext = b.import("GLSL.std.450");
++    auto abs = [&](spv::Id value) {
++        auto *fabs = impl.allocate(spv::OpExtInst, f32);
++        fabs->add_id(impl.glsl_std450_ext);
++        fabs->add_literal(GLSLstd450FAbs);
++        fabs->add_id(value);
++        impl.add(fabs);
++        return fabs->id;
++    };
++    auto nearest = op(spv::OpFConvert, f16, {input});
++    auto extended = op(spv::OpFConvert, f32, {nearest});
++    add_nocontract_decoration(impl, extended);
++    auto grew = op(spv::OpFOrdGreaterThan, b.makeBoolType(), {abs(extended), abs(input)});
++    auto step = op(spv::OpSelect, u16, {grew, b.makeUint16Constant(1), b.makeUint16Constant(0)});
++    auto bits = op(spv::OpISub, u16, {op(spv::OpBitcast, u16, {nearest}), step});
++    auto result = op(spv::OpFConvert, f32, {op(spv::OpBitcast, f16, {bits})});
++    add_nocontract_decoration(impl, result);
++    return result;
 +}
 +#endif
 +
  template <typename InstructionType>
  static spv::Id emit_cast_instruction_impl(Converter::Impl &impl, const InstructionType *instruction)
  {
-@@ -1232,7 +1319,14 @@ static spv::Id emit_cast_instruction_impl(Converter::Impl &impl, const Instructi
+@@ -1232,7 +1322,14 @@ static spv::Id emit_cast_instruction_impl(Converter::Impl &impl, const Instructi
  		// and force use of QuantizeToFP16 instead.
  		// Rounding mode of this operation is not well-defined,
  		// but that is also the case for D3D12. AMD drivers will prefer RTZ here for example.
@@ -238,7 +243,7 @@ index 4a7f235..a2b3574 100644
  		quant_op->add_id(value_id);
  		impl.add(quant_op);
  		return quant_op->id;
-@@ -1444,7 +1538,15 @@ static spv::Id emit_cast_instruction_impl(Converter::Impl &impl, const Instructi
+@@ -1444,7 +1541,15 @@ static spv::Id emit_cast_instruction_impl(Converter::Impl &impl, const Instructi
  		else
  			op = impl.allocate(opcode, instruction);
  
@@ -255,3 +260,16 @@ index 4a7f235..a2b3574 100644
  		impl.add(op);
  		if (can_relax_precision)
  			impl.decorate_relaxed_precision(instruction->getType(), op->id, false);
+@@ -1452,6 +1557,12 @@ static spv::Id emit_cast_instruction_impl(Converter::Impl &impl, const Instructi
+ 		// Truncates should be observed.
+ 		if (impl.execution_mode_meta.float_controls2 && instruction->getOpcode() == llvm::CastInst::CastOps::FPTrunc)
+ 			add_nocontract_decoration(impl, op->id);
++#ifdef PS5_FSR4_REFERENCE_FP16
++        // An inexact extension is folded with a preceding FP32 -> FP16
++        // conversion, which then keeps FP32 precision.
++        if (instruction->getOpcode() == llvm::CastInst::CastOps::FPExt)
++            add_nocontract_decoration(impl, op->id);
++#endif
+ 
+ 		return op->id;
+ 	}
