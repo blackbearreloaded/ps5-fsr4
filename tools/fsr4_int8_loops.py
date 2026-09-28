@@ -18,7 +18,7 @@ group is proven overflow-free for every iteration that runs it. The arithmetic i
 unrolled kernels', so both produce the same bytes.
 """
 from fsr4_int8_kernels import (EXTENTS, I16_MAX, I16_MIN, Kernel, int32s, pair_channels, signed_bytes, skips,
-                               start, step)
+                               start, step, zero_border)
 
 HIDDEN_PAIRS_PER_ITERATION = 4
 
@@ -200,6 +200,7 @@ def residual_block(model, spec):
     k = Kernel(spec["name"], spec["table"])
     level = spec["input"][1]
     start(k, level)
+    zero_border(k, spec["output"])
     out = residual_prefix(k, model, spec)
     target = k.temp("to")
     k.emit(f"uint {target} = {k.tensor_index(spec['output'][0], level, 'x', 'y')};")
@@ -213,9 +214,8 @@ def residual_upsample(model, spec):
     projection loops over the four phases, each writing one position of the next level."""
     k = Kernel(spec["name"], spec["table"])
     start(k, spec["input"][1])
+    zero_border(k, spec["output"], 2)
     prefix = pack_pairs(k, residual_prefix(k, model, spec))
-    k.emit(f"uvec2 extent = tensor_rows[{spec['extent_row']}].xy;")
-    k.emit("if (x >= extent.x || y >= extent.y) return;")
     offset, bias_offset, shift, factor = spec["up"]
     cin, cout = spec["channels"], spec["up_channels"]
     w = signed_bytes(model, offset, 4 * cout * cin)
@@ -255,10 +255,8 @@ def down2x2(model, spec):
     w = signed_bytes(model, spec["weights"], 4 * cout * cin)
     bias = int32s(model, spec["bias"], cout)
     k = Kernel(spec["name"], spec["table"])
-    width, height = EXTENTS[spec["output"][1]]
-    k.emit("uint x = gl_WorkGroupID.x * 64u + gl_LocalInvocationID.x;")
-    k.emit("uint y = gl_WorkGroupID.y;")
-    k.emit(f"if (x >= {width}u || y >= {height}u) return;")
+    start(k, spec["output"][1])
+    zero_border(k, spec["output"])
 
     def row(t, oc):
         return [w[(t * cout + oc) * cin + ic] for ic in range(cin)]

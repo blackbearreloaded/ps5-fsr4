@@ -23,6 +23,11 @@ LEVELS = {"H": (962, 542), "Q": (482, 272), "E": (242, 137)}
 BASES = {"R0": 0, "RA": 8_342_464, "RB": 12_537_792, "RC": 14_659_648}
 # Logical band-0 extents: invocations beyond them return, as in the converted passes.
 EXTENTS = {"H": (960, 540), "Q": (480, 270), "E": (240, 135)}
+# A CsTensorSizes row of each level: the current extent, output rounded up to eight and
+# halved per level. Kernels stop there and zero the border around it themselves.
+EXTENT_ROWS = {"H": 2, "Q": 4, "E": 7}
+# 16-channel planes of a tensor at each level.
+PLANES = {"H": 1, "Q": 2, "E": 4}
 
 
 def signed_bytes(model, start, count):
@@ -251,10 +256,8 @@ def down2x2(model, spec):
     bias = int32s(model, spec["bias"], cout)
     rows = [[w[(t * cout + oc) * cin + ic] for t in range(4) for ic in range(cin)] for oc in range(cout)]
     k = Kernel(spec["name"], spec.get("table"))
-    width, height = EXTENTS[spec["output"][1]]
-    k.emit("uint x = gl_WorkGroupID.x * 64u + gl_LocalInvocationID.x;")
-    k.emit("uint y = gl_WorkGroupID.y;")
-    k.emit(f"if (x >= {width}u || y >= {height}u) return;")
+    start(k, spec["output"][1])
+    zero_border(k, spec["output"])
     inputs = []
     for ky in range(2):
         for kx in range(2):
@@ -280,11 +283,43 @@ def down2x2(model, spec):
 
 
 def start(k, level):
-    """Invocation coordinates; lanes beyond the band's extent return, as in the converted passes."""
-    width, height = EXTENTS[level]
+    """Invocation coordinates; lanes beyond the current extent of the level return."""
     k.emit("uint x = gl_WorkGroupID.x * 64u + gl_LocalInvocationID.x;")
     k.emit("uint y = gl_WorkGroupID.y;")
-    k.emit(f"if (x >= {width}u || y >= {height}u) return;")
+    k.emit(f"uvec2 extent = tensor_rows[{EXTENT_ROWS[level]}].xy;")
+    k.emit("if (x >= extent.x || y >= extent.y) return;")
+
+
+def zero_border(k, tensor, scale=1):
+    """Zero the one-cell border of the output next to this invocation's cells, so that the
+    next 3x3 layer reads zeros there without a border clear pass. An invocation covers
+    scale x scale output cells (the four sub-pixel phases of an upsample)."""
+    base, level = tensor
+    edge = "0xffffffffu"  # -1: the unsigned index arithmetic wraps to the border cell
+    right, bottom = ("extent.x", "extent.y") if scale == 1 else (f"{scale}u * extent.x", f"{scale}u * extent.y")
+    cols = ["x"] if scale == 1 else [f"({scale}u * x + {i}u)" for i in range(scale)]
+    rows = ["y"] if scale == 1 else [f"({scale}u * y + {i}u)" for i in range(scale)]
+
+    def store(cx, cy):
+        index = k.temp("zb")
+        k.emit(f"uint {index} = {k.tensor_index(base, level, cx, cy)};")
+        for plane in range(PLANES[level]):
+            k.emit(f"scratch[{index} + {plane * k.plane(level)}u] = uvec4(0u);")
+
+    for condition, column in (("x == 0u", edge), ("x + 1u == extent.x", right)):
+        k.emit(f"if ({condition}) {{")
+        for row in rows:
+            store(column, row)
+        for corner, row in (("y == 0u", edge), ("y + 1u == extent.y", bottom)):
+            k.emit(f"if ({corner}) {{")
+            store(column, row)
+            k.emit("}")
+        k.emit("}")
+    for condition, row in (("y == 0u", edge), ("y + 1u == extent.y", bottom)):
+        k.emit(f"if ({condition}) {{")
+        for column in cols:
+            store(column, row)
+        k.emit("}")
 
 
 def skips(k, base, level, banks, x, y):
@@ -298,6 +333,7 @@ def residual_block(model, spec):
     k = Kernel(spec["name"], spec.get("table"))
     level = spec["input"][1]
     start(k, level)
+    zero_border(k, spec["output"])
     target = k.temp("to")
     k.emit(f"uint {target} = {k.tensor_index(spec['output'][0], level, 'x', 'y')};")
     residual_prefix(k, model, spec, block=16,
@@ -310,10 +346,8 @@ def residual_upsample(model, spec):
     and 11): each invocation writes the four sub-pixel phases of its position."""
     k = Kernel(spec["name"], spec.get("table"))
     start(k, spec["input"][1])
+    zero_border(k, spec["output"], 2)
     prefix = residual_prefix(k, model, spec, packed=True)
-    # Only positions inside the current tensor extent project; each phase stays inside the band.
-    k.emit(f"uvec2 extent = tensor_rows[{spec['extent_row']}].xy;")
-    k.emit("if (x >= extent.x || y >= extent.y) return;")
     offset, bias_offset, shift, factor = spec["up"]
     cin, cout = spec["channels"], spec["up_channels"]
     w = signed_bytes(model, offset, 4 * cout * cin)
@@ -404,12 +438,12 @@ PASSES = {
               ([8] * 64, [128] * 32 + [256] * 32)),
     19: dict(block("pass9", 64, (("RB", "E"), ("RC", "Q")), (76800, 81408, 8), (81536, 89728, 7), (90240, 98432),
                    ([7] * 64, [128] * 64)),
-             kind="residual_upsample", skip=("RA", "Q"), up=(98688, 106880, 9, 256), up_channels=32, extent_row=9),
+             kind="residual_upsample", skip=("RA", "Q"), up=(98688, 106880, 9, 256), up_channels=32),
     21: block("pass10", 32, (("RC", "Q"), ("RA", "Q")), (107008, 109312, 8), (109440, 111488, 7), (111744, 113792),
               ([7] * 32, [128] * 32)),
     23: dict(block("pass11", 32, (("RA", "Q"), ("RB", "H")), (113920, 116224, 8), (116352, 118400, 8),
                    (118656, 120704), ([9] * 32, [256] * 32)),
-             kind="residual_upsample", skip=("R0", "H"), up=(120832, 122880, 7, 128), up_channels=16, extent_row=11),
+             kind="residual_upsample", skip=("R0", "H"), up=(120832, 122880, 7, 128), up_channels=16),
     25: block("pass12", 16, (("RB", "H"), ("R0", "H")), (123008, 125312, 7), (125440, 125952, 8), (126080, 126592),
               ([7] * 16, [64] * 16)),
     # The postpass's learned head, run in place of the border clear that only it needed: its

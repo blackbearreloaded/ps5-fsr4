@@ -57,9 +57,13 @@ converted shaders; empty values keep every converted shader. The postpass's own
 learned head is replaced by the generated INT8 head as well: it is compiled as
 a function and linked into the converted postpass, and dispatch 26, the border
 clear only that head read, is then not dispatched (`--no-int8-postpass-head`
-keeps both). `--wave64` lists the dispatches compiled as wave64 (default 13, 21
-and 23: network passes 6, 10 and 11); the tables header carries the set to the
-runtime.
+keeps both). When every network pass is generated, the other border clears are
+not dispatched either: each generated kernel stops at the current tensor extent
+and zeroes the one-cell border around its output, which the next 3x3 layer
+reads (`tests/test_fsr4_scratch_borders.py` follows the shared scratch regions
+over several frames). `--wave64` lists the dispatches compiled as wave64
+(default 13, 21 and 23: network passes 6, 10 and 11); the tables header carries
+the set to the runtime.
 
 ## Native FSR4 applications
 

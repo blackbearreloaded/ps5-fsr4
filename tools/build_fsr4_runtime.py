@@ -31,6 +31,12 @@ PASSES = 28
 # hide their weight loads better: 0.119/0.122/0.182 -> 0.115/0.116/0.170 ms); looped pass 6
 # as wave64 (0.090 -> 0.066 ms).
 WAVE64_DEFAULT = (13, 21, 23)
+# Network passes 1-12 and the border clears after the prepass and each of them. When all
+# network passes are generated, no border clear is dispatched: each kernel writes only inside
+# its current extent and zeroes the border around its output, and the prepass output's R0
+# region, zeroed by the runtime before the first frame, only ever holds H tensors.
+NETWORK_PASSES = tuple(range(3, 26, 2))
+BORDER_CLEARS = tuple(range(2, 27, 2))
 # CsTensorSizes rows as pyramid levels (row k holds output / 2^level, rounded up to 8 first).
 FSR4_TENSOR_LEVEL = (1, 0, 1, 1, 2, 2, 2, 3, 3, 3, 2, 2, 1, 1, 0, 0, 0)
 NAMED_ROLES = {
@@ -760,6 +766,11 @@ def main():
             if old["dispatches"][frame * PASSES + index]["shader"] != source["shader"]:
                 raise ValueError("Shader sequence changes between frames at pass %d" % index)
         bindings, data = pass_bindings(capture, dispatch, role, index)
+        constants = constants_kind(index, dispatch)
+        if index in generated and constants == "NONE":
+            # Generated kernels stop at the current tensor extent from the tensor sizes.
+            bindings = bindings + [(2, 0, "UNIFORM_BUFFER", "CONSTANTS")]
+            constants = "TENSOR"
         if data is not None:
             if weights is not None and weights != data:
                 raise ValueError("Model initializers differ between passes")
@@ -796,9 +807,11 @@ def main():
             # Only the postpass head read the border this pass clears; the linked head checks its
             # own extent, so the pass is not dispatched.
             rule = ("NONE", 0, 0, 0)
+        elif index in BORDER_CLEARS and set(NETWORK_PASSES) <= generated:
+            rule = ("NONE", 0, 0, 0)
         if index in banked:
             rule = (rule[0], rule[1], banked[index], rule[3])  # output banks as workgroup layers
-        passes.append((index, constants_kind(index, dispatch), rule, len(bindings)))
+        passes.append((index, constants, rule, len(bindings)))
         identities.append(dict(index=index, entry=dispatch["entryPoint"], dxil_sha256=sha(dxil.read_bytes()),
                                spirv_sha256=sha(code), constants=passes[-1][1], bindings=bindings,
                                groups=rule, reference_groups=dispatch["dispatchDimension"]))
