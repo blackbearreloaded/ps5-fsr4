@@ -14,8 +14,9 @@ tonemapped BGRA8 frames of the demo scene. For each shot this writes:
   <shot>/metrics.md        PSNR and SSIM of each 1080p image against the reference
 
 and for the orbiting clip clip/clip.mp4 and clip/clip_zoom.mp4 (bilinear | FSR4 | native),
-plus an index README.md. Metrics compare against the 64-sample supersampled render;
-SSIM is computed on luma with a 7x7 uniform window.
+plus hero.png (a 2x2 sheet of the shot where FSR4 gains most) and an index README.md.
+Metrics compare against the 64-sample supersampled render; SSIM is computed on luma with
+a 7x7 uniform window.
 """
 import argparse
 import re
@@ -163,7 +164,29 @@ def build_shot(capture, sizes, shot, out):
         lines.append(f"| {caption} | {metrics[mode][0]:.2f} | {metrics[mode][1]:.4f} | {metrics[mode][2]:.2f} | "
                      f"{metrics[mode][3]:.4f} |")
     (out / shot / "metrics.md").write_text("\n".join(lines) + "\n")
-    return dict(renders=renders, order=order, captions=captions, metrics=metrics)
+    return dict(renders=renders, order=order, captions=captions, metrics=metrics, zooms=dict(zip(order, zooms)))
+
+
+def build_hero(shot, result, frame_ms, out):
+    """A 2x2 sheet for the project README: bilinear and FSR4 from the lowest render size, then
+    native 1080p and the reference, each 3x zoomed and captioned with its PSNR."""
+    r = result["renders"][-1]
+    cells = [(f"{r}-bilinear", f"Bilinear {r.replace('x', '×')} → 1080p"),
+             (f"{r}-fsr4", f"FSR4 {r.replace('x', '×')} → 1080p"),
+             ("native", "Native 1080p, no AA"), ("reference", "Reference, 64× supersampled")]
+    captions = []
+    for mode, caption in cells:
+        if mode in result["metrics"]:
+            caption += f"  ({result['metrics'][mode][0]:.1f} dB)"
+        captions.append(caption)
+    rows = [labelled([result["zooms"][cells[i][0]], result["zooms"][cells[i + 1][0]]], captions[i:i + 2], bar=34)
+            for i in (0, 2)]
+    title = f"FSR4 on PS5: {r.replace('x', '×')} → 1920×1080 in {frame_ms} ms  ·  {shot}, {ZOOM}× zoom"
+    sheet = Image.new("RGB", (rows[0].width, rows[0].height * 2 + 44), (24, 24, 24))
+    ImageDraw.Draw(sheet).text((8, 8), title, fill=(255, 255, 255), font=font(24))
+    sheet.paste(rows[0], (0, 44))
+    sheet.paste(rows[1], (0, 44 + rows[0].height))
+    sheet.save(out / "hero.png")
 
 
 def build_clip(capture, sizes, out):
@@ -194,23 +217,39 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path, help="Directory with the fetched fsr4-compare-* files")
     parser.add_argument("--out", type=Path, default=Path(__file__).resolve().parents[1] / "build/fsr4-comparisons")
+    parser.add_argument("--hero", help="Shot for hero.png (default: the largest FSR4 gain at the lowest render size)")
+    parser.add_argument("--frame-ms", default="2.9", help="FSR4 frame time quoted in hero.png")
     args = parser.parse_args()
     capture, out = args.capture.resolve(), args.out.resolve()
     sizes = load_log(capture)
     shots = sorted({m.group(1) for n in sizes for m in [re.match(r"(.+)-reference$", n)] if m})
     out.mkdir(parents=True, exist_ok=True)
     index = ["# FSR4 on PS5: before and after", "",
-             "Frames of the demo scene captured on the console: a bilinear upscale of the render, the FSR4 output "
-             "after the static shot converged, a native 1080p render without anti-aliasing and a 64-sample "
-             "supersampled reference. Metrics are against the reference (SSIM on luma, 7×7 window).", ""]
+             "Frames of the demo scene (`examples/fsr4_demo_scene.comp`) captured on the console by "
+             "`examples/fsr4_compare_main.c`: a bilinear upscale of the render, the FSR4 output after the "
+             "static shot converged (48 jittered frames), a native 1080p render without anti-aliasing and a "
+             "64-sample supersampled reference. All are tonemapped like the demo. Metrics are against the "
+             "reference (SSIM on luma, 7×7 window).", "",
+             "> [!CAUTION]", "> GitHub scales and compresses images shown inside a page. For the real pixels, open "
+             "a file such as `overview/full/960x540-fsr4.png` and use Raw or Download.", ""]
+    results = {}
     for shot in shots:
-        result = build_shot(capture, sizes, shot, out)
+        result = results[shot] = build_shot(capture, sizes, shot, out)
         index += [f"## {shot}", "", f"![{shot} zoom]({shot}/zoom.png)", "", f"![{shot} crops]({shot}/strip.png)", "",
                   "| Image | PSNR (dB) | SSIM |", "| --- | ---: | ---: |"]
         for mode, caption in zip(result["order"][:-1], result["captions"][:-1]):
             p, s = result["metrics"][mode][:2]
             index.append(f"| {caption} | {p:.2f} | {s:.4f} |")
-        index.append("")
+        index += ["", f"Full frames: [{shot}/full/]({shot}/full/). Crops, zooms and windows: "
+                  f"[{shot}/metrics.md]({shot}/metrics.md).", ""]
+
+    def gain(shot):
+        r = results[shot]["renders"][-1]
+        return results[shot]["metrics"][f"{r}-fsr4"][0] - results[shot]["metrics"][f"{r}-bilinear"][0]
+
+    hero = args.hero or max(results, key=gain)
+    build_hero(hero, results[hero], args.frame_ms, out)
+    index[2:2] = ["![FSR4 before and after](hero.png)", ""]
     frames = build_clip(capture, sizes, out)
     if frames:
         index += ["## Motion", "", f"{frames} frames of an orbiting camera with the rotor spinning: "

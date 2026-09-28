@@ -47,6 +47,14 @@ which `libps5_fsr4.a` embeds. That material keeps AMD's terms: the SDK stages
 `share/ps5fsr4/AMD-SDK-LICENSE.md` and a provenance notice beside it. Review
 those terms before distributing a build.
 
+## Comparison images
+
+The images and clips in [`comparisons/`](comparisons/README.md) are this
+repository's own demo scene (`examples/fsr4_demo_scene.comp`), rendered and
+upscaled on a PS5 by `examples/fsr4_compare_main.c`. They contain no AMD shader,
+model or other FSR4 material and are distributed under the repository's
+`GPL-3.0-or-later` terms.
+
 ## PS5 FSR1 research reference
 
 [sainsaji/ps5-upscalar-research](https://github.com/sainsaji/ps5-upscalar-research)
