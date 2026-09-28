@@ -90,13 +90,9 @@ def accumulate(k, stream, inputs, rows, groups, sums):
 
 
 def requantize(k, sums, shifts, relu=False):
-    """Round-half-even shift and INT8 saturation of each sum; returns int expressions."""
-    out = []
-    for s, shift in zip(sums, shifts):
-        name = k.temp("q")
-        k.emit(f"int {name} = clamp(rne({s}, {shift}), {0 if relu else -128}, 127);")
-        out.append(name)
-    return out
+    """Round-half-even shift and INT8 saturation of each sum; returns int expressions whose
+    low 16 bits are the results."""
+    return [k.requant(s, shift, relu) for s, shift in zip(sums, shifts)]
 
 
 def pack_pairs(k, values):

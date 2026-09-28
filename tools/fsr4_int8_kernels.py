@@ -17,6 +17,7 @@ the generated sources are written to the build tree only.
 import struct
 
 I16_MIN, I16_MAX = -32768, 32767
+MAGIC = 12582912.0  # 1.5 * 2^23: FP32 values within 2^22 of it are spaced 1 apart
 # Band-0 scratch layout: padded tensor sizes (width, height) and base anchors, in bytes.
 LEVELS = {"H": (962, 542), "Q": (482, 272), "E": (242, 137)}
 BASES = {"R0": 0, "RA": 8_342_464, "RB": 12_537_792, "RC": 14_659_648}
@@ -123,9 +124,12 @@ class Kernel:
                 head.append(f"layout(set = {set_index}, binding = {binding}) buffer Scratch {{ uvec4 scratch[]; }};")
             elif kind == "tensor":
                 head.append(f"layout(set = {set_index}, binding = {binding}) uniform Tensor {{ uvec4 tensor_rows[17]; }};")
-        # Round half to even: the tie-breaking bit s comes from one unsigned bitfield extract.
-        head += ["int rne(int x, int s) {",
-                 "  return (x + ((1 << (s - 1)) - 1) + int(bitfieldExtract(uint(x), s, 1))) >> s;",
+        # Requantization: the FP32 adder rounds x * 2^-s + 1.5 * 2^23 half to even onto an
+        # integer (exact for |x| < 2^22 * 2^s: the sum stays in [2^23, 2^24), where the ulp is
+        # 1). After the INT8 clamp, the low 16 bits of its encoding are the result sign-extended,
+        # and callers only use those bits (pack4 bytes, int16_t lanes).
+        head += ["int requant(int x, float scale, float low) {",
+                 f"  return floatBitsToInt(clamp(fma(float(x), scale, {MAGIC!r}), low, {MAGIC + 127!r}));",
                  "}",
                  "uint pack4(int a, int b, int c, int d) {",
                  "  return (uint(a) & 0xffu) | ((uint(b) & 0xffu) << 8) | ((uint(c) & 0xffu) << 16) | (uint(d) << 24);",
@@ -203,18 +207,21 @@ class Kernel:
                     op = "=" if n == 0 else "+="
                     self.emit(f"{acc} {op} i16vec2({inputs[i]}) * {self.weight(rows[oc0][i], rows[oc1][i])};")
                 self.emit(f"{sums[0]} += int({acc}.x); {sums[1]} += int({acc}.y);")
-            results = []
-            for oc, s in zip((oc0, oc1), sums):
-                name = self.temp("q")
-                # ReLU before a rounding shift equals clamping the rounded value at zero.
-                self.emit(f"int {name} = clamp(rne({s}, {shifts[oc]}), {0 if relu else -128}, 127);")
-                results.append(name)
+            results = [self.requant(s, shifts[oc], relu) for oc, s in zip((oc0, oc1), sums)]
             if packed:
                 name = self.temp("p")
                 self.emit(f"i16vec2 {name} = i16vec2(int16_t({results[0]}), int16_t({results[1]}));")
                 out[oc0], out[oc1] = f"{name}.x", f"{name}.y"
             else:
                 out[oc0], out[oc1] = results
+
+    def requant(self, value, shift, relu=False):
+        """The INT8 result of a sum: round-half-even shift, then saturation (ReLU before a
+        rounding shift equals clamping the rounded value at zero). Only its low 16 bits are
+        meaningful."""
+        name = self.temp("q")
+        self.emit(f"int {name} = requant({value}, {2.0 ** -shift!r}, {MAGIC if relu else MAGIC - 128!r});")
+        return name
 
     def store_bank(self, index, level, bank, values):
         """One 16-channel bank of int results at a precomputed tensor index."""
