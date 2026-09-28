@@ -211,12 +211,44 @@ static int run(void)
     float *expected = malloc(output_bytes);
     if (!expected) return 1;
 
-    ps5fsr4_context_desc cd = {sizeof(cd), physical, device, rw, rh, ow, oh, FSR4_RT_FLAGS, NULL};
+    /* A pipeline cache saved by an earlier run makes context creation skip compilation. */
+    VkPipelineCacheCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    void *cache_blob = NULL;
+    size_t cache_bytes = 0;
+    {
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/pipeline-cache.bin", ASSET_ROOT);
+        FILE *f = fopen(path, "rb");
+        if (f && !fseek(f, 0, SEEK_END) && (cache_bytes = (size_t)ftell(f)) && !fseek(f, 0, SEEK_SET) &&
+            (cache_blob = malloc(cache_bytes)) && fread(cache_blob, 1, cache_bytes, f) == cache_bytes) {
+            pci.initialDataSize = cache_bytes;
+            pci.pInitialData = cache_blob;
+        }
+        if (f) fclose(f);
+    }
+    VkPipelineCache pipeline_cache;
+    CHECK(vkCreatePipelineCache(device, &pci, NULL, &pipeline_cache));
+    free(cache_blob);
+    ps5fsr4_context_desc cd = {sizeof(cd), physical, device, rw, rh, ow, oh, FSR4_RT_FLAGS, NULL, pipeline_cache};
     ps5fsr4_context *context;
     double t0 = now_ms();
     ps5fsr4_result fr = ps5fsr4_context_create(&cd, &context);
-    report("FSR4_RT_CONTEXT result=%d create_ms=%.1f\n", (int)fr, now_ms() - t0);
+    report("FSR4_RT_CONTEXT result=%d create_ms=%.1f cache_in=%zu\n", (int)fr, now_ms() - t0,
+           (size_t)pci.initialDataSize);
     if (fr) return 1;
+    {
+        size_t bytes = 0;
+        void *blob = NULL;
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/fsr4-rt-pipeline-cache.bin", OUTPUT_ROOT);
+        if (vkGetPipelineCacheData(device, pipeline_cache, &bytes, NULL) == VK_SUCCESS && (blob = malloc(bytes)) &&
+            vkGetPipelineCacheData(device, pipeline_cache, &bytes, blob) == VK_SUCCESS) {
+            FILE *f = fopen(path, "wb");
+            if (f) { fwrite(blob, 1, bytes, f); fclose(f); }
+            report("FSR4_RT_PIPELINE_CACHE bytes=%zu\n", bytes);
+        }
+        free(blob);
+    }
 
     VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -326,6 +358,7 @@ static int run(void)
     vkDestroyBuffer(device, staging, NULL);
     vkFreeMemory(device, staging_memory, NULL);
     free(expected);
+    vkDestroyPipelineCache(device, pipeline_cache, NULL);
     vkDestroyDevice(device, NULL);
     vkDestroyInstance(instance, NULL);
     report("FSR4_RT_SUMMARY frames=%u worst_psnr=%.2f\n", FSR4_RT_FRAMES, worst_psnr);

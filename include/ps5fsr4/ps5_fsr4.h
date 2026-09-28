@@ -58,6 +58,9 @@ typedef struct ps5fsr4_context_desc {
     uint32_t output_width, output_height;
     uint32_t flags;                     /* ps5fsr4_flags */
     const VkAllocationCallbacks *allocator;
+    /* Optional. Pipeline creation reads and fills this cache; persisting its
+     * data (vkGetPipelineCacheData) avoids recompiling on later runs. */
+    VkPipelineCache pipeline_cache;
 } ps5fsr4_context_desc;
 
 typedef struct ps5fsr4_dispatch_desc {

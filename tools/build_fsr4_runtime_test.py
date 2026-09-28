@@ -51,6 +51,7 @@ def main():
     parser.add_argument("--runtime", type=Path, default=ROOT / "build/fsr4-runtime")
     parser.add_argument("--out", type=Path, default=ROOT / "build/fsr4-runtime-test")
     parser.add_argument("--host", action="store_true", help="Build a host binary instead of the PS5 package")
+    parser.add_argument("--pipeline-cache", type=Path, help="Pipeline cache data saved by an earlier run on the same driver")
     args = parser.parse_args()
     capture = args.capture.resolve()
     graph = load_capture(capture, json.loads((capture / "complete.json").read_text())["graph_sha256"])
@@ -76,6 +77,8 @@ def main():
             digest.update(data)
         (jx, jy), (rw, rh), reset = probe_parameters(args.scenario, f, (color0["width"], color0["height"]))
         rows.append("{%r,%r,%d,%d,%du}" % (jx, jy, rw, rh, int(reset)))
+    if args.pipeline_cache:
+        (assets / "pipeline-cache.bin").write_bytes(args.pipeline_cache.read_bytes())
     fixture_id = digest.hexdigest()
     header = "\n".join([
         "#include <stdint.h>",

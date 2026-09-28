@@ -181,7 +181,7 @@ static ps5fsr4_result create_pipeline(ps5fsr4_context *c, uint32_t index)
     info.stage.module = module;
     info.stage.pName = "main";
     info.layout = pl->layout;
-    VkResult r = vkCreateComputePipelines(c->desc.device, VK_NULL_HANDLE, 1, &info, allocator(c), &pl->pipeline);
+    VkResult r = vkCreateComputePipelines(c->desc.device, c->desc.pipeline_cache, 1, &info, allocator(c), &pl->pipeline);
     vkDestroyShaderModule(c->desc.device, module, allocator(c));
     if (r != VK_SUCCESS) return PS5FSR4_ERROR_VULKAN;
     VkDescriptorSetAllocateInfo sets = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
