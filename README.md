@@ -25,9 +25,9 @@ This project is independent of the upstream driver project.
 **Status:** Experimental.
 
 - The `ps5_fsr4` runtime upscales 1280×720 to 1920×1080 on the PS5 in about
-  3.05 ms per frame. AMD's converted shaders alone take 3.75 ms, on par with
-  a BC250 (3.93 ms); generated INT8 kernels run most network passes faster and
-  produce the same bytes.
+  2.9 ms per frame. AMD's converted shaders alone take 3.75 ms, on par with
+  a BC250 (3.93 ms); generated INT8 kernels run the network, including the
+  postpass's learned head, faster and produce the same bytes.
 - Every captured scenario is accepted: static, motion, camera cut, SDR,
   dynamic resolution, sharpening, several output sizes and the 1080p target
   ([validation](VALIDATION.md#fsr4-acceptance)).

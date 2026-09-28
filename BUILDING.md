@@ -44,8 +44,8 @@ option takes the dispatch indices whose converted shaders are replaced by
 packed-i16 kernels that `tools/fsr4_int8_kernels.py` generates from the local
 model. The default, 3, 5, 9, 11, 21, 23 and 25 (network passes 1, 2, 4, 5 and
 10-12), is the set the PS5 runs faster unrolled; 13, 15, 17 and 19 (passes 6-9)
-and 26 (the postpass head, run in place of its border clear) are also
-available. `--int8-loops` takes the dispatch indices generated in loop form by
+and 26 (the postpass head, run in place of its border clear; exact only for
+output sizes that are multiples of 8) are also available. `--int8-loops` takes the dispatch indices generated in loop form by
 `tools/fsr4_int8_loops.py`, whose loop bodies fit the instruction cache and
 stream their weight pairs from a table after the model; its default is 13, 15,
 17, 19 and 23. All of them produce byte-identical output and bake the model's

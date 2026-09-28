@@ -411,7 +411,10 @@ PASSES = {
     25: block("pass12", 16, (("RB", "H"), ("R0", "H")), (123008, 125312, 7), (125440, 125952, 8), (126080, 126592),
               ([7] * 16, [64] * 16)),
     # The postpass's learned head, run in place of the border clear that only it needed: its
-    # 16-byte latent goes to the free RA region and the postpass reads it from there.
+    # 16-byte latent goes to the free RA region and the postpass reads it from there. Its taps
+    # stop at the H tensor extent, which is rounded up from the output size, so it matches
+    # the postpass only for output sizes that are multiples of 8; posthead_function (linked
+    # into the postpass, the default) uses the postpass's own extent.
     26: dict(block("posthead", 16, (("R0", "H"), ("RA", "H")), (126720, 129024, 8), (129152, 129664, 7),
                    (129792, 130304), ([6] * 16, [64] * 16)), pad_row=13),
 }
@@ -436,9 +439,11 @@ POSTHEAD_FUNCTION = "fsr4_posthead"
 
 def posthead_function(model, scratch_binding):
     """GLSL source of the postpass head as `uvec4 fsr4_posthead(uint x, uint y, uint ext_x,
-    uint ext_y)`: the latent's four packed words for H pixel (x, y), taps outside the current
-    H extent reading zero. It is linked into the converted postpass in place of its FP32 head
-    (build_fsr4_runtime.fuse_postpass_head); `scratch_binding` is (set, binding)."""
+    uint ext_y)`: the latent's four packed words for H pixel (x, y). It is linked into the
+    converted postpass in place of its FP32 head (build_fsr4_runtime.fuse_postpass_head);
+    `scratch_binding` is (set, binding). Taps outside (ext_x, ext_y), the postpass's own
+    extent, read zero: the cleared border cannot stand in for that check, because the
+    tensor extent is rounded up to 8 and can reach beyond it."""
     spec = dict(PASSES[POSTHEAD], table=None, banks=None, pad_extent="uvec2(ext_x, ext_y)")
     k = Kernel(spec["name"] + " function")
     out = residual_prefix(k, model, spec)

@@ -4,7 +4,7 @@
 ps5vk Vulkan driver. Applications record it into their own command buffers.
 It is experimental, but it is validated on hardware: every captured scenario
 passes the [acceptance rule](../VALIDATION.md#fsr4-acceptance) on the PS5.
-At 1280×720 → 1920×1080 the 28 passes take about 3.05 ms per frame from submission to completion
+At 1280×720 → 1920×1080 the 28 passes take about 2.9 ms per frame from submission to completion
 with the default generated network kernels, and 3.75 ms with AMD's converted shaders alone, against
 3.93 ms of GPU time for those shaders on a BC250 at 1850 MHz.
 
