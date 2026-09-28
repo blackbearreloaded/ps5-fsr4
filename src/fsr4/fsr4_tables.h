@@ -45,6 +45,15 @@ enum fsr4_constants {
     FSR4_CONSTANTS_TENSOR    /* CsTensorSizes: network layers */
 };
 
+/* How a pass derives its dispatch size (verified against captured references). */
+enum fsr4_groups {
+    FSR4_GROUPS_SPD,          /* ceil(render / 64) */
+    FSR4_GROUPS_PREPASS,      /* ceil(output / 16) */
+    FSR4_GROUPS_POSTPASS,     /* ceil(output / 32) */
+    FSR4_GROUPS_NETWORK,      /* (ceil(tensor width / 64), tensor height) at a pyramid level */
+    FSR4_GROUPS_PADDING       /* border elements of one tensor, 32 per group */
+};
+
 struct fsr4_binding {
     uint8_t set, binding, descriptor, role;
 };
@@ -55,6 +64,10 @@ struct fsr4_pass_info {
     uint8_t constants;
     uint8_t binding_count;
     const struct fsr4_binding *bindings;
+    uint8_t groups;           /* enum fsr4_groups */
+    uint8_t tensor;           /* NETWORK: pyramid level; PADDING: CsTensorSizes row */
+    uint16_t limit_width;     /* PADDING: allocated tensor width + 1 compiled into the shader */
+    uint16_t limit_height;    /* PADDING: allocated tensor height + 1 */
 };
 
 #endif

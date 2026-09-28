@@ -442,7 +442,9 @@ ps5fsr4_result ps5fsr4_dispatch(ps5fsr4_context *c, const ps5fsr4_dispatch_desc 
                                      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
     for (uint32_t i = 0; i < FSR4_PASS_COUNT; ++i) {
         uint32_t groups[3];
-        fsr4_pass_groups(&c->layout, i, d->render_width, d->render_height, groups);
+        const struct fsr4_pass_info *p = &fsr4_passes[i];
+        fsr4_pass_groups(&c->layout, p->groups, p->tensor, p->limit_width, p->limit_height,
+                         d->render_width, d->render_height, groups);
         if (i)
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                  0, 1, &between, 0, NULL, 0, NULL);

@@ -4,13 +4,27 @@
  */
 #include "../src/fsr4/fsr4_layout.h"
 
-int fsr4_test_encode(uint32_t render_w, uint32_t render_h, uint32_t output_w, uint32_t output_h,
+int fsr4_test_groups(uint32_t max_render_w, uint32_t max_render_h, uint32_t output_w, uint32_t output_h,
+                     uint32_t render_w, uint32_t render_h, uint32_t rule, uint32_t tensor,
+                     uint32_t limit_w, uint32_t limit_h, uint32_t *groups, uint32_t *luma)
+{
+    struct fsr4_layout layout;
+    if (fsr4_layout_init(&layout, max_render_w, max_render_h, output_w, output_h)) return 1;
+    fsr4_pass_groups(&layout, (uint8_t)rule, (uint8_t)tensor, (uint16_t)limit_w, (uint16_t)limit_h,
+                     render_w, render_h, groups);
+    luma[0] = layout.luma_width;
+    luma[1] = layout.luma_height;
+    return 0;
+}
+
+int fsr4_test_encode(uint32_t max_render_w, uint32_t max_render_h,
+                     uint32_t render_w, uint32_t render_h, uint32_t output_w, uint32_t output_h,
                      float jitter_x, float jitter_y, float mv_x, float mv_y, float pre_exposure,
                      int reset, float previous_pre_exposure,
                      uint32_t *spd, uint32_t *mlsr, uint32_t *tensor)
 {
     struct fsr4_layout layout;
-    if (fsr4_layout_init(&layout, render_w, render_h, output_w, output_h)) return 1;
+    if (fsr4_layout_init(&layout, max_render_w, max_render_h, output_w, output_h)) return 1;
     ps5fsr4_dispatch_desc d;
     memset(&d, 0, sizeof(d));
     d.render_width = render_w;

@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
@@ -22,6 +23,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 from build_fsr4_frame import blob, load_capture  # noqa: E402
 
 PASSES = 28
+# CsTensorSizes rows as pyramid levels (row k holds output / 2^level, rounded up to 8 first).
+FSR4_TENSOR_LEVEL = (1, 0, 1, 1, 2, 2, 2, 3, 3, 3, 2, 2, 1, 1, 0, 0, 0)
 NAMED_ROLES = {
     "FSR4UPSCALER_SpdAtomicCounter": "SPD_COUNTER",
     "FSR4UPSCALER_Luma_Mip_5": "LUMA_MIP5",
@@ -44,8 +47,55 @@ DESCRIPTOR_TYPES = {"srv_image": "SAMPLED_IMAGE", "uav_image": "STORAGE_IMAGE",
                     "cbv": "UNIFORM_BUFFER", "samplers": "SAMPLER"}
 
 
+DXC = ROOT / "build/reference-runtime/dxc/linux_dxc_2026_07_29.x86_x64"
+# Padding-clear passes: one CsTensorSizes row and the allocated tensor extent (+1) are
+# compiled into the shader; right padding is capped at 5 columns, bottom at 1 row.
+PADDING = re.compile(r"cbufferLoadLegacy\.i32\(i32 59, %dx\.types\.Handle %\d+, i32 (\d+)\)[^\n]*\n"
+                     r"(?:[^\n]*\n){2}\s*%\d+ = sub i32 (\d+), %\d+\n\s*%\d+ = sub i32 (\d+), %\d+\n"
+                     r"[^\n]*i32 5\)[^\n]*UMin\(a,b\)\n[^\n]*i32 1\)[^\n]*UMin\(a,b\)")
+
+
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def padding_elements(width, height, limit_width, limit_height):
+    right = min(limit_width - width, 5)
+    bottom = min(limit_height - height, 1)
+    top = width + 1 + right
+    return top + height + height * right + top * bottom
+
+
+def tensor_extent(output, level):
+    """Network tensors: the output rounded up to 8, halved per pyramid level."""
+    return tuple(((x + 7) // 8 * 8) >> level for x in output)
+
+
+def group_rule(index, dispatch, dxil, output):
+    """Classify how a pass sizes its dispatch and verify it against the capture."""
+    groups = dispatch["dispatchDimension"]
+    if index == 0:
+        return "SPD", 0, 0, 0
+    if index == 1:
+        return "PREPASS", 0, 0, 0
+    if index == PASSES - 1:
+        return "POSTPASS", 0, 0, 0
+    ir = subprocess.run([str(DXC / "bin/dxc"), "-dumpbin", str(dxil)], capture_output=True, text=True,
+                        env=dict(os.environ, LD_LIBRARY_PATH=str(DXC / "lib")), check=True).stdout
+    match = PADDING.search(ir)
+    if match:
+        row, limit_width, limit_height = map(int, match.groups())
+        level = FSR4_TENSOR_LEVEL[row]
+        width, height = tensor_extent(output, level)
+        expected = [-(-padding_elements(width, height, limit_width, limit_height) // 32), 1, 1]
+        if dispatch["threads"] != [32, 1, 1] or groups != expected:
+            raise ValueError("Padding rule does not reproduce pass %d: %s vs %s" % (index, groups, expected))
+        return "PADDING", row, limit_width, limit_height
+    for level in range(4):
+        width, height = tensor_extent(output, level)
+        if groups == [-(-width // 64), height, 1]:
+            return "NETWORK", level, 0, 0
+    raise ValueError("No dispatch rule reproduces pass %d: %s" % (index, groups))
 
 
 def constants_kind(index, dispatch):
@@ -91,6 +141,9 @@ def main():
     graph = load_capture(capture, json.loads((capture / "complete.json").read_text())["graph_sha256"])
     old = load_capture(original, json.loads((original / "complete.json").read_text())["graph_sha256"])
     role = roles(graph)
+    textures = {t["resourceId"]: t for t in graph["textures"]}
+    output_id = next(rid for rid, r in role.items() if r == "OUTPUT")
+    output = (textures[output_id]["width"], textures[output_id]["height"])
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     subprocess.run(["make", "fsr4-dxil-converter"], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
@@ -141,16 +194,18 @@ def main():
         header.append(f"static const uint32_t fsr4_code{index}[] = {{" + ",".join(hex(w) for w in words) + "};")
         header.append(f"static const struct fsr4_binding fsr4_bindings{index}[] = {{" + ",".join(
             "{%d,%d,FSR4_DESCRIPTOR_%s,FSR4_ROLE_%s}" % b for b in bindings) + "};")
-        passes.append((index, constants_kind(index, dispatch), dispatch["threads"], len(bindings)))
+        rule = group_rule(index, dispatch, dxil, output)
+        passes.append((index, constants_kind(index, dispatch), rule, len(bindings)))
         identities.append(dict(index=index, entry=dispatch["entryPoint"], dxil_sha256=sha(dxil.read_bytes()),
                                spirv_sha256=sha(code), constants=passes[-1][1], bindings=bindings,
-                               reference_groups=dispatch["dispatchDimension"]))
+                               groups=rule, reference_groups=dispatch["dispatchDimension"]))
     if weights is None:
         raise ValueError("Model initializers were not captured")
     header.append("static const struct fsr4_pass_info fsr4_passes[FSR4_PASS_COUNT] = {")
-    for index, kind, threads, count in passes:
-        header.append("{fsr4_code%d,sizeof(fsr4_code%d),FSR4_CONSTANTS_%s,%d,fsr4_bindings%d}," % (
-            index, index, kind, count, index))
+    for index, kind, (rule, tensor, limit_width, limit_height), count in passes:
+        header.append("{fsr4_code%d,sizeof(fsr4_code%d),FSR4_CONSTANTS_%s,%d,fsr4_bindings%d,"
+                      "FSR4_GROUPS_%s,%d,%d,%d}," % (index, index, kind, count, index, rule, tensor,
+                                                    limit_width, limit_height))
     header.append("};")
     padded = weights + b"\0" * (-len(weights) % 4)
     header.append("static const uint32_t fsr4_weights[] = {" + ",".join(
