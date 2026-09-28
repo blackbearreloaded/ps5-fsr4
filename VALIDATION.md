@@ -37,6 +37,7 @@ run.
 | reset8 | 128×96 → 192×144 | 8 frames, history reset at frames 0 and 4 (camera cut) |
 | sdr | 128×96 → 192×144 | SDR input instead of HDR |
 | resize | 128×96 → 192×144 | dynamic resolution: render size drops to 3/4 on frames 2–3 |
+| rcas | 128×96 → 192×144 | RCAS sharpening at 0.4 |
 | size240 | 160×96 → 240×144 | output size |
 | size320 | 256×144 → 320×180 | output size |
 | target | 1280×720 → 1920×1080 | static, at target resolution |

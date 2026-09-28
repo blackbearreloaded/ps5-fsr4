@@ -34,6 +34,7 @@ NAMED_ROLES = {
     "FSR4UPSCALER_Recurrent": "RECURRENT",
     "FSR4UPSCALER_ScratchBuffer": "SCRATCH",
     "FSR4UPSCALER_HistoryReprojected": "HISTORY_REPROJECTED",
+    "FSR4UPSCALER_RcasIntermediary": "RCAS_INPUT",
 }
 # Application resources, identified by format and resolution in the pinned workload.
 APPLICATION_ROLES = {  # (components, component bytes, at output resolution, written)
@@ -109,10 +110,20 @@ def constants_kind(index, dispatch):
     return "MLSR" if index in (1, PASSES - 1) else "TENSOR"
 
 
+def textures_of(graph):
+    return {t["resourceId"]: t for t in graph["textures"]}
+
+
+def frame_length(graph):
+    """Dispatches per frame: the model passes, plus RCAS when sharpening is on."""
+    dispatches = graph["dispatches"]
+    return PASSES + 1 if len(dispatches) > PASSES and "rcas" in dispatches[PASSES]["entryPoint"] else PASSES
+
+
 def roles(graph):
     names = {r["resourceId"]: r["name"] for r in graph["resources"]}
     textures = {t["resourceId"]: t for t in graph["textures"]}
-    first = graph["dispatches"][:PASSES]
+    first = graph["dispatches"][:frame_length(graph)]
     output = max((t["width"] * t["height"], rid) for rid, t in textures.items())[0]
     written = {u["descriptor"]["resource"] for d in first for u in d["uav"]}
     result = {}
@@ -130,10 +141,57 @@ def roles(graph):
     return result
 
 
+def pass_bindings(capture, dispatch, role, index):
+    """Descriptor bindings of one dispatch, and the model initializers it reads (if any)."""
+    bindings, weights = [], None
+    for set_index, label in enumerate(("srv", "uav", "cbv", "samplers")):
+        for binding in dispatch[label]:
+            reflection = dispatch[label + "_reflection"][binding["access"]["index"]]
+            if reflection["fixedBindSetOrSpace"] or reflection["bindArraySize"] != 1:
+                raise ValueError("Only singleton space-zero descriptors are supported")
+            register = reflection["fixedBindNumber"]
+            if label == "samplers":
+                bindings.append((set_index, register, "SAMPLER", "SAMPLER"))
+                continue
+            rid = binding["descriptor"]["resource"]
+            if rid not in role:
+                raise ValueError("Unclassified resource %s at pass %d" % (rid, index))
+            r = role[rid]
+            if label == "cbv":
+                kind = "UNIFORM_BUFFER"
+            elif r in ("WEIGHTS", "SCRATCH"):
+                kind = "STORAGE_BUFFER"
+            else:
+                kind = "STORAGE_IMAGE" if label == "uav" else "SAMPLED_IMAGE"
+            bindings.append((set_index, register, kind, r))
+            if r == "WEIGHTS":
+                weights = blob(capture, binding["at_event"])
+    return bindings, weights
+
+
+def convert(capture, record, index, out, env):
+    """DXIL of one captured dispatch to validated SPIR-V; returns the DXIL path and SPIR-V bytes."""
+    dxil, spv = out / f"pass{index}.dxil", out / f"pass{index}.spv"
+    dxil.write_bytes(blob(capture, record))
+    subprocess.run([str(ROOT / "build/fsr4_dxil_to_spirv"), str(dxil), str(spv)], env=env, check=True)
+    subprocess.run([str(ROOT / "build/runtime-graphics/toolchain/usr/bin/spirv-val"),
+                    "--target-env", "vulkan1.3", str(spv)], check=True)
+    return dxil, spv.read_bytes()
+
+
+def emit_code(header, index, code, bindings):
+    words = struct.unpack(f"<{len(code) // 4}I", code)
+    header.append(f"static const uint32_t fsr4_code{index}[] = {{" + ",".join(hex(w) for w in words) + "};")
+    header.append(f"static const struct fsr4_binding fsr4_bindings{index}[] = {{" + ",".join(
+        "{%d,%d,FSR4_DESCRIPTOR_%s,FSR4_ROLE_%s}" % b for b in bindings) + "};")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture", type=Path, default=ROOT / "build/reference-runtime/capture-export-scalar-unpack")
     parser.add_argument("--original", type=Path, default=ROOT / "build/reference-runtime/capture-export-before01")
+    parser.add_argument("--rcas", type=Path, default=ROOT / "build/reference-runtime/capture-export-rcas",
+                        help="Export whose frames end with RCAS sharpening (optional)")
     parser.add_argument("--out", type=Path, default=ROOT / "build/fsr4-runtime")
     parser.add_argument("--fp32-fma", choices=("explicit", "compiler-default"), default="explicit")
     args = parser.parse_args()
@@ -158,42 +216,13 @@ def main():
         for frame in range(1, len(old["dispatches"]) // PASSES):
             if old["dispatches"][frame * PASSES + index]["shader"] != source["shader"]:
                 raise ValueError("Shader sequence changes between frames at pass %d" % index)
-        bindings = []
-        for set_index, label in enumerate(("srv", "uav", "cbv", "samplers")):
-            for binding in dispatch[label]:
-                reflection = dispatch[label + "_reflection"][binding["access"]["index"]]
-                if reflection["fixedBindSetOrSpace"] or reflection["bindArraySize"] != 1:
-                    raise ValueError("Only singleton space-zero descriptors are supported")
-                register = reflection["fixedBindNumber"]
-                if label == "samplers":
-                    bindings.append((set_index, register, "SAMPLER", "SAMPLER"))
-                    continue
-                rid = binding["descriptor"]["resource"]
-                if rid not in role:
-                    raise ValueError("Unclassified resource %s at pass %d" % (rid, index))
-                r = role[rid]
-                if label == "cbv":
-                    kind = "UNIFORM_BUFFER"
-                elif r in ("WEIGHTS", "SCRATCH"):
-                    kind = "STORAGE_BUFFER"
-                else:
-                    kind = "STORAGE_IMAGE" if label == "uav" else "SAMPLED_IMAGE"
-                bindings.append((set_index, register, kind, r))
-                if r == "WEIGHTS":
-                    data = blob(capture, binding["at_event"])
-                    if weights is not None and weights != data:
-                        raise ValueError("Model initializers differ between passes")
-                    weights = data
-        dxil, spv = out / f"pass{index}.dxil", out / f"pass{index}.spv"
-        dxil.write_bytes(blob(original, source["shader"]))
-        subprocess.run([str(ROOT / "build/fsr4_dxil_to_spirv"), str(dxil), str(spv)], env=env, check=True)
-        subprocess.run([str(ROOT / "build/runtime-graphics/toolchain/usr/bin/spirv-val"),
-                        "--target-env", "vulkan1.3", str(spv)], check=True)
-        code = spv.read_bytes()
-        words = struct.unpack(f"<{len(code) // 4}I", code)
-        header.append(f"static const uint32_t fsr4_code{index}[] = {{" + ",".join(hex(w) for w in words) + "};")
-        header.append(f"static const struct fsr4_binding fsr4_bindings{index}[] = {{" + ",".join(
-            "{%d,%d,FSR4_DESCRIPTOR_%s,FSR4_ROLE_%s}" % b for b in bindings) + "};")
+        bindings, data = pass_bindings(capture, dispatch, role, index)
+        if data is not None:
+            if weights is not None and weights != data:
+                raise ValueError("Model initializers differ between passes")
+            weights = data
+        dxil, code = convert(original, source["shader"], index, out, env)
+        emit_code(header, index, code, bindings)
         rule = group_rule(index, dispatch, dxil, output)
         passes.append((index, constants_kind(index, dispatch), rule, len(bindings)))
         identities.append(dict(index=index, entry=dispatch["entryPoint"], dxil_sha256=sha(dxil.read_bytes()),
@@ -207,6 +236,31 @@ def main():
                       "FSR4_GROUPS_%s,%d,%d,%d}," % (index, index, kind, count, index, rule, tensor,
                                                     limit_width, limit_height))
     header.append("};")
+    rcas = args.rcas.resolve() if args.rcas else None
+    if rcas and (rcas / "complete.json").is_file():
+        sharpened = load_capture(rcas, json.loads((rcas / "complete.json").read_text())["graph_sha256"])
+        if frame_length(sharpened) != PASSES + 1:
+            raise ValueError("The sharpening export has no RCAS pass")
+        if sharpened["dispatches"][PASSES - 1]["shader"] != graph["dispatches"][PASSES - 1]["shader"]:
+            raise ValueError("The sharpening export runs a different postpass")
+        dispatch = sharpened["dispatches"][PASSES]
+        if [x["name"] for x in dispatch["cbv_reflection"]] != ["cbRCAS"]:
+            raise ValueError("Unexpected RCAS constants")
+        rcas_role = roles(sharpened)
+        bindings, _ = pass_bindings(rcas, dispatch, rcas_role, PASSES)
+        rcas_output = next(rid for rid, r in rcas_role.items() if r == "OUTPUT")
+        size = (textures_of(sharpened)[rcas_output]["width"], textures_of(sharpened)[rcas_output]["height"])
+        if dispatch["dispatchDimension"] != [-(-size[0] // 16), -(-size[1] // 16), 1]:
+            raise ValueError("RCAS dispatch rule does not reproduce the capture")
+        dxil, code = convert(rcas, dispatch["shader"], PASSES, out, env)
+        emit_code(header, PASSES, code, bindings)
+        header.append("#define FSR4_HAS_RCAS 1")
+        header.append("static const struct fsr4_pass_info fsr4_rcas_pass = {fsr4_code%d,sizeof(fsr4_code%d),"
+                      "FSR4_CONSTANTS_RCAS,%d,fsr4_bindings%d,FSR4_GROUPS_RCAS,0,0,0};"
+                      % (PASSES, PASSES, len(bindings), PASSES))
+        identities.append(dict(index=PASSES, entry=dispatch["entryPoint"], dxil_sha256=sha(dxil.read_bytes()),
+                               spirv_sha256=sha(code), constants="RCAS", bindings=bindings,
+                               groups=("RCAS", 0, 0, 0), reference_groups=dispatch["dispatchDimension"]))
     padded = weights + b"\0" * (-len(weights) % 4)
     header.append("static const uint32_t fsr4_weights[] = {" + ",".join(
         hex(w) for w in struct.unpack(f"<{len(padded) // 4}I", padded)) + "};")

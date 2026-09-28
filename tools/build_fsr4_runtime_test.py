@@ -17,12 +17,13 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from build_fsr4_frame import blob, load_capture  # noqa: E402
-from build_fsr4_runtime import roles  # noqa: E402
+from build_fsr4_runtime import frame_length, roles  # noqa: E402
 
 SOURCES = [ROOT / "src/fsr4/ps5_fsr4.c"]
 INCLUDES = [ROOT / "include", ROOT / "src/fsr4"]
 # Dispatch parameters of the pinned reference probe (references/bc250-fsr4-fork/dll/probe/provider_probe.c).
 FLAGS = {"sdr": "PS5FSR4_FLAG_AUTO_EXPOSURE"}
+SHARPNESS = {"rcas": 0.4}  # enableSharpening with this sharpness
 
 
 def probe_parameters(scenario, frame, render):
@@ -57,7 +58,8 @@ def main():
     graph = load_capture(capture, json.loads((capture / "complete.json").read_text())["graph_sha256"])
     dispatches = graph["dispatches"]
     textures = {t["resourceId"]: t for t in graph["textures"]}
-    frames = len(dispatches) // 28 if not args.frames else args.frames
+    per_frame = frame_length(graph)
+    frames = len(dispatches) // per_frame if not args.frames else args.frames
     out = args.out.resolve()
     assets = out / ("assets" if args.host else "PPSA88900/assets")
     assets.mkdir(parents=True, exist_ok=True)
@@ -66,8 +68,8 @@ def main():
     digest = hashlib.sha256()
     rows = []
     for f in range(frames):
-        pre, post = dispatches[28 * f + 1], dispatches[28 * f + 27]
-        files = {"color": binding(dispatches[28 * f], "srv", ids["COLOR"])["at_event"],
+        pre, post = dispatches[per_frame * f + 1], dispatches[per_frame * f + per_frame - 1]
+        files = {"color": binding(dispatches[per_frame * f], "srv", ids["COLOR"])["at_event"],
                  "depth": binding(pre, "srv", ids["DEPTH"])["at_event"],
                  "motion": binding(pre, "srv", ids["MOTION_VECTORS"])["at_event"],
                  "expected": binding(post, "uav", ids["OUTPUT"])["at_event"]}
@@ -89,6 +91,7 @@ def main():
         f"#define FSR4_RT_RENDER_HEIGHT {color0['height']}u",
         f"#define FSR4_RT_OUTPUT_WIDTH {output_tex['width']}u",
         f"#define FSR4_RT_OUTPUT_HEIGHT {output_tex['height']}u",
+        f"#define FSR4_RT_SHARPNESS {SHARPNESS.get(args.scenario, -1.0)}f",
         "#define FSR4_RT_FLAGS (%s)" % FLAGS.get(args.scenario,
                                                 "PS5FSR4_FLAG_HIGH_DYNAMIC_RANGE|PS5FSR4_FLAG_AUTO_EXPOSURE"),
         "static const struct { float jitter_x, jitter_y; uint32_t render_width, render_height, reset; } "

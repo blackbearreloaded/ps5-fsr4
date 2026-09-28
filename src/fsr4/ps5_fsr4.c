@@ -13,6 +13,21 @@
 #include "fsr4_passes.h"
 #include "fsr4_layout.h"
 
+#ifdef FSR4_HAS_RCAS
+#define FSR4_PIPELINES (FSR4_PASS_COUNT + 1u)   /* the model passes, then RCAS */
+#else
+#define FSR4_PIPELINES FSR4_PASS_COUNT
+#endif
+#define FSR4_POSTPASS (FSR4_PASS_COUNT - 1u)
+
+static const struct fsr4_pass_info *pass_info(uint32_t index)
+{
+#ifdef FSR4_HAS_RCAS
+    if (index == FSR4_PASS_COUNT) return &fsr4_rcas_pass;
+#endif
+    return &fsr4_passes[index];
+}
+
 struct fsr4_image {
     VkImage image;
     VkDeviceMemory memory;
@@ -43,7 +58,7 @@ struct ps5fsr4_context {
     VkDeviceSize constant_stride;
     VkSampler sampler;
     VkDescriptorPool pool;
-    struct fsr4_pipeline pipelines[FSR4_PASS_COUNT];
+    struct fsr4_pipeline pipelines[FSR4_PIPELINES];
     int initialized;
     float previous_pre_exposure;
     int wave64;                         /* subgroupSizeControl offers 64 for compute */
@@ -155,7 +170,7 @@ static VkDescriptorType descriptor_type(uint8_t kind)
 
 static ps5fsr4_result create_pipeline(ps5fsr4_context *c, uint32_t index)
 {
-    const struct fsr4_pass_info *p = &fsr4_passes[index];
+    const struct fsr4_pass_info *p = pass_info(index);
     struct fsr4_pipeline *pl = &c->pipelines[index];
     for (uint32_t set = 0; set < FSR4_DESCRIPTOR_SETS; ++set) {
         VkDescriptorSetLayoutBinding bindings[32];
@@ -215,7 +230,7 @@ static int application_role(uint8_t role)
 /* Bind every descriptor, taking application views from desc when given. */
 static void write_descriptors(ps5fsr4_context *c, uint32_t index, const ps5fsr4_dispatch_desc *desc)
 {
-    const struct fsr4_pass_info *p = &fsr4_passes[index];
+    const struct fsr4_pass_info *p = pass_info(index);
     struct fsr4_pipeline *pl = &c->pipelines[index];
     for (uint32_t i = 0; i < p->binding_count; ++i) {
         const struct fsr4_binding *b = &p->bindings[i];
@@ -232,7 +247,10 @@ static void write_descriptors(ps5fsr4_context *c, uint32_t index, const ps5fsr4_
         case FSR4_ROLE_DEPTH: image.imageView = desc->depth; image.imageLayout = desc->depth_layout; break;
         case FSR4_ROLE_MOTION_VECTORS:
             image.imageView = desc->motion_vectors; image.imageLayout = desc->motion_vectors_layout; break;
-        case FSR4_ROLE_OUTPUT: image.imageView = desc->output; break;
+        case FSR4_ROLE_OUTPUT:  /* with sharpening, reconstruction feeds RCAS instead */
+            image.imageView = index == FSR4_POSTPASS && desc->enable_sharpening ?
+                c->images[FSR4_ROLE_RCAS_INPUT].view : desc->output;
+            break;
         case FSR4_ROLE_WEIGHTS: buffer.buffer = c->weights.buffer; break;
         case FSR4_ROLE_SCRATCH: buffer.buffer = c->scratch.buffer; break;
         case FSR4_ROLE_CONSTANTS:
@@ -272,7 +290,10 @@ ps5fsr4_result ps5fsr4_get_memory_requirements(const ps5fsr4_context_desc *desc,
     VkDeviceSize output = (VkDeviceSize)desc->output_width * desc->output_height;
     requirements->device_bytes = layout.scratch_bytes + FSR4_WEIGHTS_BYTES + output * (8 + 8 + 4) +
         (VkDeviceSize)layout.luma_width * layout.luma_height * 4 + 16;
-    requirements->host_visible_bytes = (VkDeviceSize)FSR4_PASS_COUNT * 512;
+#ifdef FSR4_HAS_RCAS
+    requirements->device_bytes += output * 8;
+#endif
+    requirements->host_visible_bytes = (VkDeviceSize)FSR4_PIPELINES * 512;
     return PS5FSR4_OK;
 }
 
@@ -280,7 +301,7 @@ void ps5fsr4_context_destroy(ps5fsr4_context *c)
 {
     if (!c) return;
     VkDevice d = c->desc.device;
-    for (uint32_t i = 0; i < FSR4_PASS_COUNT; ++i) {
+    for (uint32_t i = 0; i < FSR4_PIPELINES; ++i) {
         struct fsr4_pipeline *pl = &c->pipelines[i];
         if (pl->pipeline) vkDestroyPipeline(d, pl->pipeline, allocator(c));
         if (pl->layout) vkDestroyPipelineLayout(d, pl->layout, allocator(c));
@@ -330,10 +351,13 @@ ps5fsr4_result ps5fsr4_context_create(const ps5fsr4_context_desc *desc, ps5fsr4_
                           c->layout.luma_width, c->layout.luma_height, 0)) ||
         (r = create_image(c, &c->images[FSR4_ROLE_AUTO_EXPOSURE], VK_FORMAT_R32_SFLOAT, 2, 1, 1)) ||
         (r = create_image(c, &c->images[FSR4_ROLE_SPD_COUNTER], VK_FORMAT_R32_UINT, 1, 1, 0)) ||
+#ifdef FSR4_HAS_RCAS
+        (r = create_image(c, &c->images[FSR4_ROLE_RCAS_INPUT], VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, 1)) ||
+#endif
         (r = create_buffer(c, &c->weights, FSR4_WEIGHTS_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1)) ||
         (r = create_buffer(c, &c->scratch, c->layout.scratch_bytes,
                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 0)) ||
-        (r = create_buffer(c, &c->constants, c->constant_stride * FSR4_PASS_COUNT,
+        (r = create_buffer(c, &c->constants, c->constant_stride * FSR4_PIPELINES,
                            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 1)))
         goto fail;
     memcpy(c->weights.mapped, fsr4_weights, FSR4_WEIGHTS_BYTES);
@@ -349,15 +373,15 @@ ps5fsr4_result ps5fsr4_context_create(const ps5fsr4_context_desc *desc, ps5fsr4_
         goto fail;
     }
     uint32_t counts[5] = {0};
-    for (uint32_t i = 0; i < FSR4_PASS_COUNT; ++i)
-        for (uint32_t j = 0; j < fsr4_passes[i].binding_count; ++j)
-            ++counts[fsr4_passes[i].bindings[j].descriptor];
+    for (uint32_t i = 0; i < FSR4_PIPELINES; ++i)
+        for (uint32_t j = 0; j < pass_info(i)->binding_count; ++j)
+            ++counts[pass_info(i)->bindings[j].descriptor];
     VkDescriptorPoolSize sizes[5];
     uint32_t size_count = 0;
     for (uint8_t k = 0; k < 5; ++k)
         if (counts[k]) sizes[size_count++] = (VkDescriptorPoolSize){descriptor_type(k), counts[k]};
     VkDescriptorPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = FSR4_PASS_COUNT * FSR4_DESCRIPTOR_SETS;
+    pool.maxSets = FSR4_PIPELINES * FSR4_DESCRIPTOR_SETS;
     pool.poolSizeCount = size_count;
     pool.pPoolSizes = sizes;
     if (vkCreateDescriptorPool(desc->device, &pool, allocator(c), &c->pool) != VK_SUCCESS) {
@@ -372,7 +396,7 @@ ps5fsr4_result ps5fsr4_context_create(const ps5fsr4_context_desc *desc, ps5fsr4_
         c->wave64 = (v13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
                     v13.minSubgroupSize <= 64 && v13.maxSubgroupSize >= 64;
     }
-    for (uint32_t i = 0; i < FSR4_PASS_COUNT; ++i) {
+    for (uint32_t i = 0; i < FSR4_PIPELINES; ++i) {
         if ((r = create_pipeline(c, i))) goto fail;
         write_descriptors(c, i, NULL);
     }
@@ -386,17 +410,19 @@ fail:
 static void write_constants(ps5fsr4_context *c, const ps5fsr4_dispatch_desc *d)
 {
     uint32_t spd[FSR4_CONSTANT_BLOCK_BYTES / 4], mlsr[FSR4_CONSTANT_BLOCK_BYTES / 4];
-    uint32_t tensor[FSR4_CONSTANT_BLOCK_BYTES / 4];
+    uint32_t tensor[FSR4_CONSTANT_BLOCK_BYTES / 4], rcas[FSR4_CONSTANT_BLOCK_BYTES / 4];
     fsr4_spd_constants(&c->layout, d->render_width, d->render_height, spd);
+    fsr4_rcas_constants(d->sharpness, d->pre_exposure, rcas);
     int reset = d->reset || !c->initialized;
     fsr4_mlsr_constants(&c->layout, d, reset, reset ? 0.0f : c->previous_pre_exposure, mlsr);
     fsr4_tensor_constants(&c->layout, tensor);
-    for (uint32_t i = 0; i < FSR4_PASS_COUNT; ++i) {
+    for (uint32_t i = 0; i < FSR4_PIPELINES; ++i) {
         const uint32_t *source = NULL;
-        switch (fsr4_passes[i].constants) {
+        switch (pass_info(i)->constants) {
         case FSR4_CONSTANTS_SPD: source = spd; break;
         case FSR4_CONSTANTS_MLSR: source = mlsr; break;
         case FSR4_CONSTANTS_TENSOR: source = tensor; break;
+        case FSR4_CONSTANTS_RCAS: source = rcas; break;
         default: continue;
         }
         memcpy((char *)c->constants.mapped + i * c->constant_stride, source, FSR4_CONSTANT_BLOCK_BYTES);
@@ -406,7 +432,11 @@ static void write_constants(ps5fsr4_context *c, const ps5fsr4_dispatch_desc *d)
 static void clear_state(ps5fsr4_context *c, VkCommandBuffer cmd)
 {
     static const uint8_t internal[] = {FSR4_ROLE_HISTORY, FSR4_ROLE_HISTORY_REPROJECTED, FSR4_ROLE_RECURRENT,
-                                       FSR4_ROLE_LUMA_MIP5, FSR4_ROLE_AUTO_EXPOSURE, FSR4_ROLE_SPD_COUNTER};
+                                       FSR4_ROLE_LUMA_MIP5, FSR4_ROLE_AUTO_EXPOSURE, FSR4_ROLE_SPD_COUNTER,
+#ifdef FSR4_HAS_RCAS
+                                       FSR4_ROLE_RCAS_INPUT,
+#endif
+                                      };
     VkImageMemoryBarrier barriers[sizeof(internal)];
     const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     for (uint32_t i = 0; i < sizeof(internal); ++i) {
@@ -460,14 +490,18 @@ ps5fsr4_result ps5fsr4_dispatch_passes(ps5fsr4_context *c, const ps5fsr4_dispatc
     if (!c || !d || d->struct_size != sizeof(*d) || !d->command_buffer || !d->color || !d->depth ||
         !d->motion_vectors || !d->output || !d->render_width || !d->render_height ||
         d->render_width > c->desc.max_render_width || d->render_height > c->desc.max_render_height ||
-        !(d->pre_exposure > 0.0f) || !finite_float(d->jitter_x) || !finite_float(d->jitter_y))
+        !(d->pre_exposure > 0.0f) || !finite_float(d->jitter_x) || !finite_float(d->jitter_y) ||
+        (d->enable_sharpening && !(d->sharpness >= 0.0f && d->sharpness <= 1.0f)))
         return PS5FSR4_ERROR_INVALID_ARGUMENT;
+#ifndef FSR4_HAS_RCAS
+    if (d->enable_sharpening) return PS5FSR4_ERROR_UNSUPPORTED;
+#endif
     if (fsr4_layout_supports_render(&c->layout, d->render_width, d->render_height))
         return PS5FSR4_ERROR_UNSUPPORTED;
     VkCommandBuffer cmd = d->command_buffer;
     if (first_pass == 0) {  /* a frame starts: constants and bindings for all of its passes */
         write_constants(c, d);
-        for (uint32_t i = 0; i < FSR4_PASS_COUNT; ++i)
+        for (uint32_t i = 0; i < FSR4_PIPELINES; ++i)
             write_descriptors(c, i, d);
         if (!c->initialized)
             clear_state(c, cmd);
@@ -487,6 +521,20 @@ ps5fsr4_result ps5fsr4_dispatch_passes(ps5fsr4_context *c, const ps5fsr4_dispatc
                                 FSR4_DESCRIPTOR_SETS, c->pipelines[i].sets, 0, NULL);
         vkCmdDispatch(cmd, groups[0], groups[1], groups[2]);
     }
+#ifdef FSR4_HAS_RCAS
+    if (end == FSR4_PASS_COUNT && d->enable_sharpening) {
+        uint32_t groups[3];
+        const struct fsr4_pass_info *p = pass_info(FSR4_PASS_COUNT);
+        fsr4_pass_groups(&c->layout, p->groups, p->tensor, p->limit_width, p->limit_height,
+                         d->render_width, d->render_height, groups);
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &between, 0, NULL, 0, NULL);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->pipelines[FSR4_PASS_COUNT].pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->pipelines[FSR4_PASS_COUNT].layout, 0,
+                                FSR4_DESCRIPTOR_SETS, c->pipelines[FSR4_PASS_COUNT].sets, 0, NULL);
+        vkCmdDispatch(cmd, groups[0], groups[1], groups[2]);
+    }
+#endif
     if (end == FSR4_PASS_COUNT) {
         c->initialized = 1;
         c->previous_pre_exposure = d->pre_exposure;

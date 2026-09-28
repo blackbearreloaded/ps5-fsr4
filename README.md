@@ -26,7 +26,7 @@ maintained by BlackBearReloaded and is independent of the upstream project.
 - The `ps5_fsr4` runtime upscales 1280×720 to 1920×1080 on the PS5 in about
   7 ms per frame.
 - Every captured scenario is accepted: static, motion, camera cut, SDR,
-  dynamic resolution, several output sizes and the 1080p target
+  dynamic resolution, sharpening, several output sizes and the 1080p target
   ([validation](VALIDATION.md#fsr4-acceptance)).
 - An interactive demo renders a scene, upscales it and presents it at 60 fps.
 - `tools/build_fsr4_sdk.py` stages the SDK: `libps5_fsr4.a`, its header,

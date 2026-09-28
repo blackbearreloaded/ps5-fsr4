@@ -321,6 +321,8 @@ static int run(void)
         dd.frame_time_delta_ms = 16.666667f;
         dd.camera_near = 0.1f; dd.camera_far = 100.0f; dd.camera_fov_vertical = 1.04719755f;
         dd.reset = fsr4_rt_frames[f].reset;
+        dd.enable_sharpening = FSR4_RT_SHARPNESS >= 0.0f;
+        dd.sharpness = dd.enable_sharpening ? FSR4_RT_SHARPNESS : 0.0f;
         fr = ps5fsr4_dispatch(context, &dd);
         if (fr) { report("FSR4_RT_ERROR dispatch=%d\n", (int)fr); return 1; }
         barrier(cmd, output.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,

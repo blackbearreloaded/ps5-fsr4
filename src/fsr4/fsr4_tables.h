@@ -35,6 +35,7 @@ enum fsr4_role {
     FSR4_ROLE_HISTORY_REPROJECTED,
     FSR4_ROLE_CONSTANTS,
     FSR4_ROLE_SAMPLER,
+    FSR4_ROLE_RCAS_INPUT,     /* reconstruction written for sharpening */
     FSR4_ROLE_COUNT
 };
 
@@ -42,7 +43,8 @@ enum fsr4_constants {
     FSR4_CONSTANTS_NONE,
     FSR4_CONSTANTS_SPD,      /* auto-exposure single-pass downsampler */
     FSR4_CONSTANTS_MLSR,     /* MLSR_Optimized_Constants: preparation and reconstruction */
-    FSR4_CONSTANTS_TENSOR    /* CsTensorSizes: network layers */
+    FSR4_CONSTANTS_TENSOR,   /* CsTensorSizes: network layers */
+    FSR4_CONSTANTS_RCAS      /* cbRCAS: sharpening */
 };
 
 /* How a pass derives its dispatch size (verified against captured references). */
@@ -51,8 +53,12 @@ enum fsr4_groups {
     FSR4_GROUPS_PREPASS,      /* ceil(output / 16) */
     FSR4_GROUPS_POSTPASS,     /* ceil(output / 32) */
     FSR4_GROUPS_NETWORK,      /* (ceil(tensor width / 64), tensor height) at a pyramid level */
-    FSR4_GROUPS_PADDING       /* border elements of one tensor, 32 per group */
+    FSR4_GROUPS_PADDING,      /* border elements of one tensor, 32 per group */
+    FSR4_GROUPS_RCAS          /* ceil(output / 16) */
 };
+
+/* Generated tables define FSR4_HAS_RCAS and fsr4_rcas_pass when the sharpening
+ * pass was captured; it runs after the postpass as pipeline FSR4_PASS_COUNT. */
 
 struct fsr4_binding {
     uint8_t set, binding, descriptor, role;

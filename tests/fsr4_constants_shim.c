@@ -20,8 +20,8 @@ int fsr4_test_groups(uint32_t max_render_w, uint32_t max_render_h, uint32_t outp
 int fsr4_test_encode(uint32_t max_render_w, uint32_t max_render_h,
                      uint32_t render_w, uint32_t render_h, uint32_t output_w, uint32_t output_h,
                      float jitter_x, float jitter_y, float mv_x, float mv_y, float pre_exposure,
-                     int reset, float previous_pre_exposure,
-                     uint32_t *spd, uint32_t *mlsr, uint32_t *tensor)
+                     int reset, float previous_pre_exposure, int sharpen, float sharpness,
+                     uint32_t *spd, uint32_t *mlsr, uint32_t *tensor, uint32_t *rcas)
 {
     struct fsr4_layout layout;
     if (fsr4_layout_init(&layout, max_render_w, max_render_h, output_w, output_h)) return 1;
@@ -34,7 +34,10 @@ int fsr4_test_encode(uint32_t max_render_w, uint32_t max_render_h,
     d.motion_vector_scale_x = mv_x;
     d.motion_vector_scale_y = mv_y;
     d.pre_exposure = pre_exposure;
+    d.enable_sharpening = (uint32_t)sharpen;
+    d.sharpness = sharpness;
     fsr4_spd_constants(&layout, render_w, render_h, spd);
+    fsr4_rcas_constants(sharpness, pre_exposure, rcas);
     fsr4_mlsr_constants(&layout, &d, reset, previous_pre_exposure, mlsr);
     fsr4_tensor_constants(&layout, tensor);
     return 0;

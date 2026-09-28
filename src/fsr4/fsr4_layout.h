@@ -7,6 +7,7 @@
 #ifndef PS5FSR4_FSR4_LAYOUT_H
 #define PS5FSR4_FSR4_LAYOUT_H
 
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -102,6 +103,10 @@ static inline void fsr4_pass_groups(const struct fsr4_layout *l, uint8_t rule, u
         groups[0] = fsr4_div_up(extent[0], 64);
         groups[1] = extent[1];
         break;
+    case FSR4_GROUPS_RCAS:
+        groups[0] = fsr4_div_up(l->output_width, 16);
+        groups[1] = fsr4_div_up(l->output_height, 16);
+        break;
     default:
         extent[0] = l->tensor[tensor][0];
         extent[1] = l->tensor[tensor][1];
@@ -165,6 +170,31 @@ static inline void fsr4_mlsr_constants(const struct fsr4_layout *l, const ps5fsr
     out[20] = d->render_height;
     out[21] = fsr4_float_bits(d->pre_exposure);
     out[22] = fsr4_float_bits(previous_pre_exposure);
+    if (d->enable_sharpening) {
+        out[23] = 1u;
+        out[24] = fsr4_float_bits(d->sharpness);
+    }
+}
+
+/* Half-precision bits of a normal float in [2^-14, 65504], truncated toward
+ * zero as the provider's host-side packing does. */
+static inline uint32_t fsr4_half_bits(float value)
+{
+    const uint32_t bits = fsr4_float_bits(value);
+    const uint32_t exponent = ((bits >> 23) & 0xffu) - 127u + 15u;
+    return ((bits >> 16) & 0x8000u) | (exponent << 10) | ((bits >> 13) & 0x3ffu);
+}
+
+/* cbRCAS: sharpness in [0, 1] maps to exp2(2 * sharpness - 2), stored as a
+ * float and as a pair of halves, followed by the pre-exposure. */
+static inline void fsr4_rcas_constants(float sharpness, float pre_exposure,
+                                       uint32_t out[FSR4_CONSTANT_BLOCK_BYTES / 4])
+{
+    memset(out, 0, FSR4_CONSTANT_BLOCK_BYTES);
+    const float x = exp2f(2.0f * sharpness - 2.0f);  /* single precision, as the provider computes it */
+    out[0] = fsr4_float_bits(x);
+    out[1] = fsr4_half_bits(x) * 0x10001u;
+    out[4] = fsr4_float_bits(pre_exposure);
 }
 
 /* CsTensorSizes: 17 int4 tensor extents shared by every network pass. */

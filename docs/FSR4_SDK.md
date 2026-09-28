@@ -80,7 +80,8 @@ one by running the runtime test on the PS5 without a cache: it saves
    4. Submit, and wait before the next dispatch on that context.
 
    Set `reset` on the first frame and on camera cuts. `motion_vector_scale`
-   converts stored motion to render pixels.
+   converts stored motion to render pixels. Set `enable_sharpening` and a
+   `sharpness` in [0, 1] to run RCAS after reconstruction.
 5. Save the cache with `vkGetPipelineCacheData` if it was created empty.
    Without a cache, the first context creation compiles the passes for about
    77 s. With the shipped cache it takes about 0.1 s.
@@ -101,7 +102,6 @@ SDK with `tools/build_fsr4_demo.py`.
 
 - Output up to 1920×1080. The render size may change per frame, up to the
   context maximum.
-- No sharpening pass.
 - One dispatch in flight per context.
 - No OpenGL backend. FSR4 runs on Vulkan compute.
 

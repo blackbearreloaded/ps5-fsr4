@@ -10,8 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPORTS = ROOT / "build/reference-runtime"
 MANIFEST = ROOT / "build/fsr4-runtime/manifest.json"
 VULKAN = ROOT / "third_party/vulkan-headers/include"
-WORDS = {"SPD": 7, "MLSR": 26, "TENSOR": 68}
-RULES = ("SPD", "PREPASS", "POSTPASS", "NETWORK", "PADDING")
+WORDS = {"SPD": 7, "MLSR": 26, "TENSOR": 68, "RCAS": 8}
+RULES = ("SPD", "PREPASS", "POSTPASS", "NETWORK", "PADDING", "RCAS")
+SHARPNESS = {"rcas": 0.4}
 
 
 def probe_parameters(scenario, frame, render):
@@ -40,7 +41,7 @@ class RuntimeConstants(unittest.TestCase):
         cls.lib = ctypes.CDLL(str(lib))
         f, u = ctypes.c_float, ctypes.c_uint32
         cls.lib.fsr4_test_encode.argtypes = [u, u, u, u, u, u, f, f, f, f, f, ctypes.c_int, f,
-                                             ctypes.POINTER(u), ctypes.POINTER(u), ctypes.POINTER(u)]
+                                             ctypes.c_int, f] + [ctypes.POINTER(u)] * 4
         cls.lib.fsr4_test_groups.argtypes = [u] * 10 + [ctypes.POINTER(u), ctypes.POINTER(u)]
 
     @classmethod
@@ -54,26 +55,31 @@ class RuntimeConstants(unittest.TestCase):
         graph = json.loads((path / "graph.json").read_text())
         textures = {t["resourceId"]: t for t in graph["textures"]}
         dispatches = graph["dispatches"]
+        # 28 dispatches per frame, 29 when the frame ends with RCAS sharpening.
+        self.per_frame = 29 if len(dispatches) > 28 and "rcas" in dispatches[28]["entryPoint"] else 28
         output = textures[dispatches[27]["uav"][2]["descriptor"]["resource"]]
         color = textures[dispatches[0]["srv"][0]["descriptor"]["resource"]]
         return path, graph, dispatches, (output["width"], output["height"]), (color["width"], color["height"])
 
     def check_export(self, name, scenario):
         path, _, dispatches, (ow, oh), render = self.load(name)
-        previous = 0.0
-        for frame in range(len(dispatches) // 28):
+        previous, per = 0.0, self.per_frame
+        sharpness = SHARPNESS.get(scenario)
+        for frame in range(len(dispatches) // per):
             (jx, jy), (rw, rh), reset = probe_parameters(scenario, frame, render)
             blocks = {k: (ctypes.c_uint32 * 68)() for k in WORDS}
             rc = self.lib.fsr4_test_encode(render[0], render[1], rw, rh, ow, oh, jx, jy, rw, rh, 1.0,
                                            int(reset), 0.0 if reset else previous,
-                                           blocks["SPD"], blocks["MLSR"], blocks["TENSOR"])
+                                           sharpness is not None, sharpness or 0.0,
+                                           blocks["SPD"], blocks["MLSR"], blocks["TENSOR"], blocks["RCAS"])
             self.assertEqual(rc, 0)
             previous = 1.0
-            for index in range(28):
-                d = dispatches[frame * 28 + index]
+            for index in range(per):
+                d = dispatches[frame * per + index]
                 if not d["cbv"]:
                     continue
-                kind = ("SPD" if index == 0 else "MLSR" if index in (1, 27) else "TENSOR")
+                kind = ("SPD" if index == 0 else "MLSR" if index in (1, 27) else
+                        "RCAS" if index == 28 else "TENSOR")
                 data = (path / (d["cbv"][0]["at_event"]["sha256"] + ".bin")).read_bytes()
                 expected = list(memoryview(data[:4 * WORDS[kind]]).cast("I"))
                 actual = list(blocks[kind])[:WORDS[kind]]
@@ -88,14 +94,15 @@ class RuntimeConstants(unittest.TestCase):
         sizes = {names[t["resourceId"]]: (t["width"], t["height"]) for t in graph["textures"]}
         buffers = {names[b["resourceId"]]: b.get("length", b.get("byteSize")) for b in graph["buffers"]}
         self.assertEqual(buffers["FSR4UPSCALER_ScratchBuffer"], 20880256)
-        for frame in range(len(dispatches) // 28):
+        per = self.per_frame
+        for frame in range(len(dispatches) // per):
             _, (rw, rh), _ = probe_parameters(scenario, frame, render)
-            for index, (rule, tensor, limit_w, limit_h) in enumerate(rules):
+            for index, (rule, tensor, limit_w, limit_h) in enumerate(rules[:per]):
                 groups, luma = (ctypes.c_uint32 * 3)(), (ctypes.c_uint32 * 2)()
                 self.assertEqual(self.lib.fsr4_test_groups(render[0], render[1], ow, oh, rw, rh,
                                                            RULES.index(rule), tensor, limit_w, limit_h,
                                                            groups, luma), 0)
-                self.assertEqual(list(groups), dispatches[frame * 28 + index]["dispatchDimension"],
+                self.assertEqual(list(groups), dispatches[frame * per + index]["dispatchDimension"],
                                  f"{name} frame {frame} pass {index} {rule}")
             self.assertEqual(tuple(luma), sizes["FSR4UPSCALER_Luma_Mip_5"])
 
@@ -123,6 +130,10 @@ class RuntimeConstants(unittest.TestCase):
     def test_unaligned_output(self):
         self.check_export("size320", "static")
         self.check_geometry("size320", "static")
+
+    def test_sharpening(self):
+        self.check_export("rcas", "rcas")
+        self.check_geometry("rcas", "rcas")
 
 
 if __name__ == "__main__":

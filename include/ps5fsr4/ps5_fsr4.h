@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 #define PS5FSR4_VERSION_MAJOR 0
-#define PS5FSR4_VERSION_MINOR 1
+#define PS5FSR4_VERSION_MINOR 2
 #define PS5FSR4_VERSION_PATCH 0
 
 typedef enum ps5fsr4_result {
@@ -79,6 +79,8 @@ typedef struct ps5fsr4_dispatch_desc {
     float frame_time_delta_ms;
     float camera_near, camera_far, camera_fov_vertical;
     uint32_t reset;                     /* nonzero discards history (first frame, camera cut) */
+    uint32_t enable_sharpening;         /* nonzero: RCAS sharpening after reconstruction */
+    float sharpness;                    /* [0, 1] when sharpening; 1 is the strongest */
 } ps5fsr4_dispatch_desc;
 
 typedef struct ps5fsr4_memory_requirements {
