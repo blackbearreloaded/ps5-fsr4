@@ -83,19 +83,18 @@ def main():
     work = ROOT / "build/fsr4-sdk"
     work.mkdir(parents=True, exist_ok=True)
 
-    # 1. Native runtime archive.
+    # 1. Public header, then the native runtime archive built against it.
+    (DIST_SDK / "include/ps5fsr4").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ROOT / "include/ps5fsr4/ps5_fsr4.h", DIST_SDK / "include/ps5fsr4/ps5_fsr4.h")
     obj = work / "ps5_fsr4.o"
     subprocess.run([str(compiler), "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
-                    "-ffunction-sections", "-fdata-sections",
-                    "-I" + str(DIST_SDK / "include"), "-I" + str(ROOT / "include"),
+                    "-ffunction-sections", "-fdata-sections", "-I" + str(DIST_SDK / "include"),
                     "-I" + str(ROOT / "src/fsr4"), "-I" + str(runtime),
                     "-c", str(ROOT / "src/fsr4/ps5_fsr4.c"), "-o", str(obj)], env=env, check=True)
     ar = sdk / "bin/prospero-ar"
     archive(str(ar) if ar.is_file() else "ar", DIST_SDK / "lib/libps5_fsr4.a", [str(obj)])
 
-    # 2. Public header, provenance and notices.
-    (DIST_SDK / "include/ps5fsr4").mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(ROOT / "include/ps5fsr4/ps5_fsr4.h", DIST_SDK / "include/ps5fsr4/ps5_fsr4.h")
+    # 2. Provenance and notices.
     share = DIST_SDK / "share/ps5fsr4"
     if share.exists():
         shutil.rmtree(share)

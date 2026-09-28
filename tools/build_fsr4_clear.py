@@ -96,7 +96,8 @@ def build_native_app(out, source_file, title_name, extra_sources=(), include_dir
     for folder in ("sce_sys", "sce_module"):
         (package / folder).mkdir(parents=True, exist_ok=True)
     objects, crt = [], out / "crt.o"
-    includes = ["-I" + str(DIST_SDK / "include"), "-I" + str(out), *("-I" + str(x) for x in include_dirs)]
+    # Explicit source directories come first so a staged SDK header never shadows them.
+    includes = [*("-I" + str(x) for x in include_dirs), "-I" + str(DIST_SDK / "include"), "-I" + str(out)]
     for n, source in enumerate((source_file, *extra_sources)):
         obj, dep = out / ("main.o" if n == 0 else f"extra{n}.o"), out / ("main.d" if n == 0 else f"extra{n}.d")
         subprocess.run([str(compiler), "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
