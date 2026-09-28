@@ -37,6 +37,12 @@ checkout elsewhere, set `PS5VK_ROOT` for the tools and `DRIVER` for make.
 A pipeline cache is only valid for the `libps5vk.a` build that saved it; see
 [the SDK guide](docs/FSR4_SDK.md).
 
+The pass tables come from `tools/build_fsr4_runtime.py`. Its
+`--int8-kernels 13,15,17,19` option replaces the converted network passes 6-9
+with packed-i16 kernels that `tools/fsr4_int8_kernels.py` generates from the
+local model; they produce byte-identical output and bake the model's weights,
+so the generated sources stay in the build tree like the converted shaders.
+
 ## Native FSR4 applications
 
 These PPSA88900 applications use the prepared native template and payload SDK
