@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from build_fsr4_clear import build_native_app  # noqa: E402
 
-SHADERS = ("scene", "present")
+SHADERS = ("scene.comp", "present.comp", "blit.vert", "blit.frag")
 
 
 def glslang():
@@ -32,8 +32,9 @@ def main():
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     header = ["#include <stdint.h>"]
-    for name in SHADERS:
-        source = ROOT / f"examples/native_consumer/fsr4_demo_{name}.comp"
+    for shader in SHADERS:
+        source = ROOT / f"examples/native_consumer/fsr4_demo_{shader}"
+        name = shader.replace(".comp", "").replace(".", "_")
         spv = out / f"fsr4_demo_{name}.spv"
         subprocess.run([glslang(), "-V", "--target-env", "vulkan1.1", str(source), "-o", str(spv)],
                        check=True, stdout=subprocess.DEVNULL)

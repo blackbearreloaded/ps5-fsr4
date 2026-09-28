@@ -3,7 +3,8 @@
  *
  * Interactive native FSR4 demo: a compute-rendered scene at 1280x720 with
  * sub-pixel jitter and motion vectors, upscaled to 1920x1080 by ps5_fsr4 and
- * shown on VideoOut.
+ * shown on VideoOut. A compute pass composes the displayed frame and a
+ * full-screen draw writes it into the display image.
  *
  * Controls: left stick orbits, right stick zooms, Cross cycles FSR4 / split /
  * bilinear, Square toggles the automatic camera, Triangle resets history.
@@ -154,6 +155,104 @@ static void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from
     vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &b);
 }
 
+/* Full-screen draw that copies the composed frame into a display image. */
+struct blit {
+    VkSampler sampler;
+    VkDescriptorSetLayout set_layout;
+    VkPipelineLayout layout;
+    VkDescriptorSet set;
+    VkRenderPass pass;
+    VkImageView views[2];
+    VkFramebuffer framebuffers[2];
+    VkPipeline pipeline;
+};
+
+static int create_shader(const uint32_t *code, size_t bytes, VkShaderModule *module)
+{
+    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = bytes, .pCode = code};
+    CHECK(vkCreateShaderModule(device, &mi, NULL, module));
+    return 0;
+}
+
+static int create_blit(struct blit *b, const VkImage display[2], VkImageView frame, VkDescriptorPool pool,
+                       VkPipelineCache cache)
+{
+    VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
+        .minFilter = VK_FILTER_NEAREST, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+    CHECK(vkCreateSampler(device, &si, NULL, &b->sampler));
+    VkDescriptorSetLayoutBinding binding = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                            VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo sl = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                          .bindingCount = 1, .pBindings = &binding};
+    CHECK(vkCreateDescriptorSetLayout(device, &sl, NULL, &b->set_layout));
+    VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                     .pSetLayouts = &b->set_layout};
+    CHECK(vkCreatePipelineLayout(device, &pl, NULL, &b->layout));
+    VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                      .descriptorPool = pool, .descriptorSetCount = 1, .pSetLayouts = &b->set_layout};
+    CHECK(vkAllocateDescriptorSets(device, &ai, &b->set));
+    VkDescriptorImageInfo ii = {b->sampler, frame, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = b->set, .dstBinding = 0,
+        .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
+    vkUpdateDescriptorSets(device, 1, &w, 0, NULL);
+
+    VkAttachmentDescription attachment = {.format = VK_FORMAT_B8G8R8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    .colorAttachmentCount = 1, .pColorAttachments = &color_ref};
+    VkRenderPassCreateInfo rp = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1,
+                                 .pAttachments = &attachment, .subpassCount = 1, .pSubpasses = &subpass};
+    CHECK(vkCreateRenderPass(device, &rp, NULL, &b->pass));
+    for (int i = 0; i < 2; ++i) {
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = display[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_B8G8R8A8_UNORM,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        CHECK(vkCreateImageView(device, &vi, NULL, &b->views[i]));
+        VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = b->pass,
+            .attachmentCount = 1, .pAttachments = &b->views[i], .width = OUTPUT_W, .height = OUTPUT_H, .layers = 1};
+        CHECK(vkCreateFramebuffer(device, &fi, NULL, &b->framebuffers[i]));
+    }
+
+    VkShaderModule vs, fs;
+    if (create_shader(fsr4_demo_blit_vert_spv, sizeof(fsr4_demo_blit_vert_spv), &vs) ||
+        create_shader(fsr4_demo_blit_frag_spv, sizeof(fsr4_demo_blit_frag_spv), &fs))
+        return 1;
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
+         .module = vs, .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .module = fs, .pName = "main"}};
+    VkPipelineVertexInputStateCreateInfo vertex = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    VkViewport viewport = {0.0f, 0.0f, (float)OUTPUT_W, (float)OUTPUT_H, 0.0f, 1.0f};
+    VkRect2D scissor = {{0, 0}, {OUTPUT_W, OUTPUT_H}};
+    VkPipelineViewportStateCreateInfo viewports = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1, .pViewports = &viewport, .scissorCount = 1, .pScissors = &scissor};
+    VkPipelineRasterizationStateCreateInfo raster = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .lineWidth = 1.0f};
+    VkPipelineMultisampleStateCreateInfo multisample = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+    VkPipelineColorBlendAttachmentState blend_attachment = {.colorWriteMask = 0xf};
+    VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1, .pAttachments = &blend_attachment};
+    VkGraphicsPipelineCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2,
+        .pStages = stages, .pVertexInputState = &vertex, .pInputAssemblyState = &assembly,
+        .pViewportState = &viewports, .pRasterizationState = &raster, .pMultisampleState = &multisample,
+        .pColorBlendState = &blend, .layout = b->layout, .renderPass = b->pass};
+    CHECK(vkCreateGraphicsPipelines(device, cache, 1, &gi, NULL, &b->pipeline));
+    vkDestroyShaderModule(device, vs, NULL);
+    vkDestroyShaderModule(device, fs, NULL);
+    return 0;
+}
+
 static VkQueue queue;
 static VkCommandBuffer cmd;
 static VkFence fence;
@@ -241,19 +340,20 @@ static int run(void)
     vkGetDeviceQueue(device, 0, 0, &queue);
     vkGetPhysicalDeviceMemoryProperties(physical, &memory_properties);
 
-    struct image color, depth, motion, upscaled;
+    struct image color, depth, motion, upscaled, composed;
     if (create_image(&color, VK_FORMAT_R16G16B16A16_SFLOAT, RENDER_W, RENDER_H, 1) ||
         create_image(&depth, VK_FORMAT_R32_SFLOAT, RENDER_W, RENDER_H, 1) ||
         create_image(&motion, VK_FORMAT_R32G32B32A32_SFLOAT, RENDER_W, RENDER_H, 1) ||
-        create_image(&upscaled, VK_FORMAT_R32G32B32A32_SFLOAT, OUTPUT_W, OUTPUT_H, 0))
+        create_image(&upscaled, VK_FORMAT_R32G32B32A32_SFLOAT, OUTPUT_W, OUTPUT_H, 0) ||
+        create_image(&composed, VK_FORMAT_R8G8B8A8_UNORM, OUTPUT_W, OUTPUT_H, 1))
         return 1;
 
-    /* Packed BGRA8 frame written by the present shader and copied to VideoOut. */
+    /* Packed BGRA8 screenshots, written by the present shader when asked. */
     VkBuffer staging;
     VkDeviceMemory staging_memory;
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = (VkDeviceSize)OUTPUT_W * OUTPUT_H * 4,
-        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
     CHECK(vkCreateBuffer(device, &bi, NULL, &staging));
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(device, staging, &req);
@@ -268,7 +368,7 @@ static int run(void)
     VkImageCreateInfo di_info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
         .format = VK_FORMAT_B8G8R8A8_UNORM, .extent = {OUTPUT_W, OUTPUT_H, 1}, .mipLevels = 1, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
     VkImage display[2];
     CHECK(vkCreateImage(device, &di_info, NULL, &display[0]));
     CHECK(vkCreateImage(device, &di_info, NULL, &display[1]));
@@ -290,27 +390,31 @@ static int run(void)
     CHECK(vkCreatePipelineCache(device, &pci, NULL, &pipeline_cache));
     free(cache_blob);
 
-    VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
-    VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 2,
-                                      .poolSizeCount = 2, .pPoolSizes = sizes};
+    VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 6}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+                                     {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
+    VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 3,
+                                      .poolSizeCount = 3, .pPoolSizes = sizes};
     VkDescriptorPool pool;
     CHECK(vkCreateDescriptorPool(device, &dpi, NULL, &pool));
     const VkDescriptorType scene_types[3] = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                              VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
-    const VkDescriptorType present_types[3] = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                               VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+    const VkDescriptorType present_types[4] = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                               VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
     struct compute scene, present;
+    struct blit blit;
     double t0 = now_ms();
     if (create_compute(&scene, fsr4_demo_scene_spv, sizeof(fsr4_demo_scene_spv), scene_types, 3, 48, pool,
                        pipeline_cache) ||
-        create_compute(&present, fsr4_demo_present_spv, sizeof(fsr4_demo_present_spv), present_types, 3, 32,
-                       pool, pipeline_cache))
+        create_compute(&present, fsr4_demo_present_spv, sizeof(fsr4_demo_present_spv), present_types, 4, 32,
+                       pool, pipeline_cache) ||
+        create_blit(&blit, display, composed.view, pool, pipeline_cache))
         return 1;
     bind_image(scene.set, 0, color.view);
     bind_image(scene.set, 1, depth.view);
     bind_image(scene.set, 2, motion.view);
     bind_image(present.set, 0, upscaled.view);
     bind_image(present.set, 1, color.view);
+    bind_image(present.set, 3, composed.view);
     VkDescriptorBufferInfo sbi = {staging, 0, VK_WHOLE_SIZE};
     VkWriteDescriptorSet sw = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = present.set,
         .dstBinding = 2, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -398,11 +502,15 @@ static int run(void)
         double scene_ms, fsr_ms, present_ms;
         if (begin()) return 1;
         if (frame == 0) {
-            const VkImage images[4] = {color.image, depth.image, motion.image, upscaled.image};
-            for (int i = 0; i < 4; ++i)
+            const VkImage images[5] = {color.image, depth.image, motion.image, upscaled.image, composed.image};
+            for (int i = 0; i < 5; ++i)
                 image_barrier(cmd, images[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0,
                               VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        } else {  /* the previous frame's draw left the composed frame read-only */
+            image_barrier(cmd, composed.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                          VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         }
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scene.pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scene.layout, 0, 1, &scene.set, 0, NULL);
@@ -439,8 +547,10 @@ static int run(void)
         reset = 0;
 
         const uint32_t slot = frame & 1;
+        const int screenshot = frame >= 300 && frame <= 302;
         struct { float view[4], status[4]; } present_params = {
-            {(float)mode, OUTPUT_W * 0.5f, (float)RENDER_W, (float)RENDER_H}, {(float)last_fsr, (float)last_frame, 0, 0}};
+            {(float)mode, OUTPUT_W * 0.5f, (float)RENDER_W, (float)RENDER_H},
+            {(float)last_fsr, (float)last_frame, (float)screenshot, 0}};
         if (begin()) return 1;
         memory_barrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -449,12 +559,16 @@ static int run(void)
         vkCmdPushConstants(cmd, present.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(present_params),
                            &present_params);
         vkCmdDispatch(cmd, OUTPUT_W / 8, (OUTPUT_H + 7) / 8, 1);
-        memory_barrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        image_barrier(cmd, display[slot], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        VkBufferImageCopy region = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {OUTPUT_W, OUTPUT_H, 1}};
-        vkCmdCopyBufferToImage(cmd, staging, display[slot], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        image_barrier(cmd, composed.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = blit.pass,
+            .framebuffer = blit.framebuffers[slot], .renderArea = {{0, 0}, {OUTPUT_W, OUTPUT_H}}};
+        vkCmdBeginRenderPass(cmd, &rb, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blit.pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blit.layout, 0, 1, &blit.set, 0, NULL);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdEndRenderPass(cmd);
         if (submit(&present_ms)) return 1;
         VkResult pr = ps5vkPresentFrame(surface, slot, (uint64_t)frame + 1);
         if (pr != VK_SUCCESS) { report("FSR4_DEMO_ERROR present=%d\n", (int)pr); return 1; }
@@ -469,9 +583,12 @@ static int run(void)
         }
         /* Native screenshots of the three view modes (frames 300..302) for validation. */
         if (frame == 299) mode = 0;
-        if (frame >= 300 && frame <= 302) {
+        if (screenshot) {
             char path[256];
             snprintf(path, sizeof(path), "%s/fsr4-demo-mode%d.bgra", output_root(), mode);
+            VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = staging_memory,
+                                         .size = VK_WHOLE_SIZE};
+            CHECK(vkInvalidateMappedMemoryRanges(device, 1, &range));
             FILE *f = fopen(path, "wb");
             if (f) { fwrite(staging_mapped, 1, (size_t)OUTPUT_W * OUTPUT_H * 4, f); fclose(f); }
             report("FSR4_DEMO_SCREENSHOT frame=%u mode=%d\n", frame, mode);
