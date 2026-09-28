@@ -35,6 +35,7 @@ int main(int argc, char **argv)
         .entrypoint = "main",
         .optimise = true,
         .compute_buffer_spills = true,
+        .compute_wave_size = getenv("FSR4_PROBE_WAVE64") ? 64 : 32,
         .address32_hi = 2,
         .robust_buffer_access2 = true,
         .static_descriptor_use = true,
@@ -143,9 +144,9 @@ int main(int argc, char **argv)
         const uint32_t features = PS5VK_FEATURE_STORAGE_BUFFER_8BIT |
             PS5VK_FEATURE_STORAGE_BUFFER_16BIT | PS5VK_FEATURE_SHADER_INT8_COMPUTE |
             PS5VK_FEATURE_SHADER_INT16 | PS5VK_FEATURE_BUFFER_DEVICE_ADDRESS;
-        adapter_result = ps5vk_runtime_compile_compute_features(
-            words, (size_t)length / 4, "main", &layout, NULL, features,
-            &program, &code);
+        adapter_result = ps5vk_compiler_adapter_compile(
+            NULL, words, (size_t)length / 4, "main", &layout, NULL, features,
+            getenv("FSR4_PROBE_WAVE64") ? 64 : 32, &program, &code);
     }
     printf("{\"result\":\"%s\",\"code_bytes\":%zu,"
            "\"metadata_version\":%u,\"descriptors\":%u,"
@@ -158,9 +159,11 @@ int main(int argc, char **argv)
            output.metadata.scratch_valid ? "true" : "false");
     if (argc > 2)
         printf("{\"adapter_result\":%d,\"adapter_code_bytes\":%zu,"
-               "\"adapter_descriptors\":%u,\"adapter_push_bytes\":%u}\n",
+               "\"adapter_descriptors\":%u,\"adapter_push_bytes\":%u,\"wave_size\":%u,"
+               "\"vgprs\":%u,\"user_sgprs\":%u,\"lds_size\":%u,\"scratch\":%u}\n",
                adapter_result, program.code_words * sizeof(uint32_t),
-               program.descriptor_count, program.push_constant_size);
+               program.descriptor_count, program.push_constant_size, program.wave_size,
+               program.vgprs, program.user_sgprs, program.lds_size, program.scratch_bytes_per_wave);
     const char *dump_path = getenv("PS5VK_PROBE_CODE_OUT");
     int dump_ok = 1;
     if (dump_path && result == PSBC_RESULT_OK) {
