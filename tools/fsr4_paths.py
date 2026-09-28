@@ -18,6 +18,8 @@ DRIVER = Path(os.environ.get("PS5VK_ROOT", ROOT / "external/ps5-vulkan")).resolv
 DRIVER_SDK = DRIVER / "dist-sdk"
 DIST_SDK = ROOT / "dist-sdk"
 TOOLCHAIN_BIN = DRIVER / "build/runtime-graphics/toolchain/usr/bin"
+if not (TOOLCHAIN_BIN / "spirv-val").exists() and shutil.which("spirv-val"):
+    TOOLCHAIN_BIN = Path(shutil.which("spirv-val")).resolve().parent  # system SPIR-V tools and glslang
 VULKAN_HEADERS = DRIVER / "third_party/vulkan-headers/include"
 if str(DRIVER / "tools") not in sys.path:
     sys.path.append(str(DRIVER / "tools"))
