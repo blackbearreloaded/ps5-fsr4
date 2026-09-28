@@ -184,13 +184,15 @@ def export(capture, warp, out, variant="upstream-rc11", reference_run=None):
                 record["before_event"] = blob(out, data)
             graph["dispatches"].append(entry)
             (out / "graph.json").write_text(json.dumps(graph, indent=2) + "\n")
-        if len(graph["dispatches"]) != 28 * frames:
-            raise ValueError("Expected 28 dispatches for each of %d frames" % frames)
+        # 28 dispatches per frame, 29 when the frame ends with RCAS sharpening.
+        per_frame = len(graph["dispatches"]) // frames
+        if per_frame not in (28, 29) or per_frame * frames != len(graph["dispatches"]):
+            raise ValueError("Expected 28 or 29 dispatches for each of %d frames" % frames)
         matches = [x for x in graph["dispatches"][-1]["uav"]
                    if x.get("at_event", {}).get("sha256") == expected_output]
         if len(matches) != 1:
             raise ValueError("Replay output differs from the uncaptured reference")
-        receipt = dict(dispatches=28 * frames, resources=len(graph["resources"]),
+        receipt = dict(dispatches=len(graph["dispatches"]), resources=len(graph["resources"]),
                        unique_shaders=len({x["shader"]["sha256"] for x in graph["dispatches"]}),
                        final_output=matches[0]["descriptor"]["resource"],
                        final_output_sha256=expected_output, reference_variant=variant,

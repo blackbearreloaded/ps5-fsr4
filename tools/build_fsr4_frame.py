@@ -42,7 +42,8 @@ def load_capture(path, expected):
     graph = json.loads(raw)
     count = len(graph["dispatches"])
     if (sha(raw) != expected or receipt["graph_sha256"] != expected or
-            receipt["dispatches"] != count or count == 0 or count % 28 or count > 28 * 600):
+            receipt["dispatches"] != count or count == 0 or (count % 28 and count % 29) or
+            count > 29 * 600):  # 29 per frame when the frame ends with RCAS sharpening
         raise ValueError("Capture identity mismatch")
     return graph
 
