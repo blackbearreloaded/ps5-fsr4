@@ -43,14 +43,16 @@ class Generated(unittest.TestCase):
         tools = [shutil.which(name) for name in ("glslangValidator", "spirv-val")]
         if not all(tools):
             raise unittest.SkipTest("glslang or SPIRV-Tools not installed")
-        model = bytes(random.Random(3).getrandbits(8) for _ in range(131072))
+        rng = random.Random(3)
+        model = bytes(rng.getrandbits(8) for _ in range(131072))
         bindings = [(0, 18, "STORAGE_BUFFER", "WEIGHTS"), (1, 11, "STORAGE_BUFFER", "SCRATCH"),
                     (2, 0, "UNIFORM_BUFFER", "CONSTANTS")]
         with tempfile.TemporaryDirectory() as tmp:
             for index in kernels.PASSES:
                 with self.subTest(dispatch=index):
-                    source, groups = kernels.generate(index, model, bindings)
+                    source, groups, pairs = kernels.generate(index, model, bindings, table=32768)
                     self.assertGreater(groups, 0)
+                    self.assertTrue(pairs and "model_words[32768u]" in source)
                     glsl, spv = Path(tmp) / f"pass{index}.comp", Path(tmp) / f"pass{index}.spv"
                     glsl.write_text(source)
                     subprocess.run([tools[0], "--target-env", "vulkan1.3", "-o", str(spv), str(glsl)],

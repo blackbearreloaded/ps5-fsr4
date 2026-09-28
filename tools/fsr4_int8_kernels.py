@@ -76,13 +76,31 @@ def group_pair(row0, row1, ranges):
 
 
 class Kernel:
-    """GLSL source under construction for one pass."""
+    """GLSL source under construction for one pass.
 
-    def __init__(self, name):
+    With a `table` (a dword index into the model buffer), weight pairs are read from
+    that table through the scalar cache instead of being encoded as 32-bit literals,
+    which keeps each packed multiply-add at 8 bytes of code; `pairs` collects the
+    table's entries in the order the kernel reads them.
+    """
+
+    def __init__(self, name, table=None):
         self.name = name
         self.lines = []
         self.counter = 0
         self.groups = 0
+        self.table = table
+        self.pairs = []
+
+    def weight(self, w0, w1):
+        """A weight pair: an inline constant when both halves are the same small value, else
+        a literal or the next table entry."""
+        if w0 == w1 and -16 <= w0 <= 64:
+            return f"i16vec2(int16_t({w0}))"
+        if self.table is None:
+            return f"i16vec2(int16_t({w0}), int16_t({w1}))"
+        self.pairs.append(((w1 & 0xffff) << 16) | (w0 & 0xffff))
+        return f"i16vec2(unpack16(model_words[{self.table + len(self.pairs) - 1}u]))"
 
     def emit(self, line):
         self.lines.append("  " + line)
@@ -98,7 +116,8 @@ class Kernel:
                 "layout(local_size_x = 64) in;"]
         for set_index, binding, kind in bindings:
             if kind == "model":
-                head.append(f"layout(set = {set_index}, binding = {binding}) readonly buffer Model {{ uint model_words[]; }};")
+                head.append(f"layout(set = {set_index}, binding = {binding}) readonly restrict buffer Model "
+                            "{ uint model_words[]; };")
             elif kind == "scratch":
                 head.append(f"layout(set = {set_index}, binding = {binding}) buffer Scratch {{ uvec4 scratch[]; }};")
             elif kind == "tensor":
@@ -178,7 +197,7 @@ class Kernel:
                 self.groups += 1
                 for n, i in enumerate(group):
                     op = "=" if n == 0 else "+="
-                    self.emit(f"{acc} {op} i16vec2({inputs[i]}) * i16vec2(int16_t({rows[oc0][i]}), int16_t({rows[oc1][i]}));")
+                    self.emit(f"{acc} {op} i16vec2({inputs[i]}) * {self.weight(rows[oc0][i], rows[oc1][i])};")
                 self.emit(f"{sums[0]} += int({acc}.x); {sums[1]} += int({acc}.y);")
             results = []
             for oc, s in zip((oc0, oc1), sums):
@@ -211,7 +230,7 @@ def down2x2(model, spec):
     w = signed_bytes(model, spec["weights"], 4 * cout * cin)
     bias = int32s(model, spec["bias"], cout)
     rows = [[w[(t * cout + oc) * cin + ic] for t in range(4) for ic in range(cin)] for oc in range(cout)]
-    k = Kernel(spec["name"])
+    k = Kernel(spec["name"], spec.get("table"))
     width, height = EXTENTS[spec["output"][1]]
     k.emit("uint x = gl_WorkGroupID.x * 64u + gl_LocalInvocationID.x;")
     k.emit("uint y = gl_WorkGroupID.y;")
@@ -241,7 +260,7 @@ def skips(k, base, level, banks, x, y):
 
 def residual_block(model, spec):
     """Residual block stored to scratch at its own level (passes 1, 2, 4, 5, 7, 8, 10, 12)."""
-    k = Kernel(spec["name"])
+    k = Kernel(spec["name"], spec.get("table"))
     level = spec["input"][1]
     start(k, level)
     target = k.temp("to")
@@ -254,7 +273,7 @@ def residual_block(model, spec):
 def residual_upsample(model, spec):
     """Residual block followed by a learned 2x2 sub-pixel projection with a skip (passes 9
     and 11): each invocation writes the four sub-pixel phases of its position."""
-    k = Kernel(spec["name"])
+    k = Kernel(spec["name"], spec.get("table"))
     start(k, spec["input"][1])
     prefix = residual_prefix(k, model, spec, packed=True)
     # Only positions inside the current tensor extent project; each phase stays inside the band.
@@ -371,8 +390,9 @@ DEFAULT = (3, 5, 9, 11, 21, 23, 25)
 BINDINGS = {"WEIGHTS": "model", "SCRATCH": "scratch", "CONSTANTS": "tensor"}
 
 
-def generate(index, model, bindings):
-    """GLSL source of the packed kernel replacing dispatch `index`, and its group count."""
-    spec = PASSES[index]
+def generate(index, model, bindings, table=None):
+    """GLSL source of the packed kernel replacing dispatch `index`, its group count and, with a
+    `table` dword index into the model buffer, the weight-pair words it reads from there."""
+    spec = dict(PASSES[index], table=table)
     kernel = GENERATORS[spec["kind"]](model, spec)
-    return kernel.source([(s, b, BINDINGS[role]) for s, b, _, role in bindings]), kernel.groups
+    return kernel.source([(s, b, BINDINGS[role]) for s, b, _, role in bindings]), kernel.groups, kernel.pairs

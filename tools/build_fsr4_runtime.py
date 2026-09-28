@@ -470,9 +470,17 @@ def strip_dead_code(spv, guard_removed):
     return code
 
 
-def generate_kernel(index, model, bindings, out):
-    """Packed-i16 kernel for dispatch `index`, compiled to validated SPIR-V; returns its words."""
-    source, groups = fsr4_int8_kernels.generate(index, model, bindings)
+def generate_kernel(index, model, bindings, out, tables=None):
+    """Packed-i16 kernel for dispatch `index`, compiled to validated SPIR-V; returns its words.
+
+    With `tables` (the weight-pair words already placed after the model), a kernel that
+    binds the model reads its weight pairs from a table appended there."""
+    table = None
+    if tables is not None and any(role == "WEIGHTS" for _, _, _, role in bindings):
+        table = (len(model) + 3) // 4 + len(tables)
+    source, groups, pairs = fsr4_int8_kernels.generate(index, model, bindings, table)
+    if tables is not None:
+        tables += pairs
     glsl, spv = out / f"pass{index}.comp", out / f"pass{index}.spv"
     glsl.write_text(source)
     subprocess.run([str(TOOLCHAIN_BIN / "glslangValidator"), "--target-env", "vulkan1.3", "-o", str(spv), str(glsl)],
@@ -503,8 +511,12 @@ def main():
                         help="Comma-separated dispatch indices whose converted shader is replaced by a "
                              f"generated packed-i16 kernel (available: {sorted(fsr4_int8_kernels.PASSES)}; "
                              "an empty value keeps every converted shader)")
+    parser.add_argument("--weight-tables", action="store_true",
+                        help="Generated kernels read their weight pairs from tables after the model "
+                             "instead of instruction literals")
     args = parser.parse_args()
     generated = {int(i) for i in args.int8_kernels.split(",") if i}
+    tables = [] if args.weight_tables else None
     if generated - set(fsr4_int8_kernels.PASSES):
         raise SystemExit(f"no generated kernel for dispatch {sorted(generated - set(fsr4_int8_kernels.PASSES))}")
     capture, original = args.capture.resolve(), args.original.resolve()
@@ -544,7 +556,7 @@ def main():
         if index in generated:
             if weights is None:
                 raise ValueError("Model initializers are needed before pass %d" % index)
-            code = generate_kernel(index, weights, bindings, out)
+            code = generate_kernel(index, weights, bindings, out, tables)
         if index == fsr4_int8_kernels.POSTPASS and fsr4_int8_kernels.POSTHEAD in generated:
             spv = out / f"pass{index}.spv"
             spv.write_bytes(remove_dead_code(route_postpass_latent(code, LATENT_OFFSET)))
@@ -593,16 +605,17 @@ def main():
         identities.append(dict(index=PASSES, entry=dispatch["entryPoint"], dxil_sha256=sha(dxil.read_bytes()),
                                spirv_sha256=sha(code), constants="RCAS", bindings=bindings,
                                groups=("RCAS", 0, 0, 0), reference_groups=dispatch["dispatchDimension"]))
-    padded = weights + b"\0" * (-len(weights) % 4)
+    # The model, then the generated kernels' weight-pair tables: all uploaded to the model buffer.
+    padded = weights + b"\0" * (-len(weights) % 4) + struct.pack(f"<{len(tables or [])}I", *(tables or []))
     header.append("static const uint32_t fsr4_weights[] = {" + ",".join(
         hex(w) for w in struct.unpack(f"<{len(padded) // 4}I", padded)) + "};")
-    header.append(f"#define FSR4_WEIGHTS_BYTES {len(weights)}u")
+    header.append(f"#define FSR4_WEIGHTS_BYTES {len(padded) if tables else len(weights)}u")
     table = "\n".join(header) + "\n"
     (out / "fsr4_passes.h").write_text(table)
     manifest = dict(capture_graph_sha256=json.loads((capture / "complete.json").read_text())["graph_sha256"],
                     original_graph_sha256=json.loads((original / "complete.json").read_text())["graph_sha256"],
                     fp32_fma=args.fp32_fma, model_guards=bool(args.keep_model_guards),
-                    int8_kernels=sorted(generated),
+                    int8_kernels=sorted(generated), weight_table_words=len(tables or []),
                     weights_sha256=sha(weights), table_sha256=sha(table.encode()),
                     converter_patch_sha256=sha((ROOT / "tools/dxil-spirv-fsr4-fp16.patch").read_bytes()),
                     passes=identities)
