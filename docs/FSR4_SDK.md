@@ -4,7 +4,8 @@
 ps5vk Vulkan driver. Applications record it into their own command buffers.
 It is experimental, but it is validated on hardware: every captured scenario
 passes the [acceptance rule](../VALIDATION.md#fsr4-acceptance) on the PS5.
-At 1280×720 → 1920×1080 the 28 passes take about 7 ms per frame from submission to completion.
+At 1280×720 → 1920×1080 the 28 passes take about 3.75 ms per frame from submission to completion,
+against 3.93 ms of GPU time for the same shaders on a BC250 at 1850 MHz.
 
 ## Contents
 
@@ -59,7 +60,7 @@ one by running the runtime test on the PS5 without a cache: it saves
    `VK_KHR_storage_buffer_storage_class`. If the driver offers
    `subgroupSizeControl`, enable it and pass
    `PS5FSR4_FLAG_SUBGROUP_SIZE_CONTROL`. Five passes then run as wave64,
-   saving about 0.7 ms with bit-identical output.
+   saving about 0.1 ms with bit-identical output.
 2. Create the inputs at render resolution. All images use
    `VK_IMAGE_LAYOUT_GENERAL` and optimal tiling, and are storage images with
    `SAMPLED` added. The images the demo uses:

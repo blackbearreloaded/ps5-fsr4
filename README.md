@@ -24,7 +24,7 @@ maintained by BlackBearReloaded and is independent of the upstream project.
 **Status:** Experimental.
 
 - The `ps5_fsr4` runtime upscales 1280×720 to 1920×1080 on the PS5 in about
-  7 ms per frame.
+  3.75 ms per frame, on par with the same shaders on a BC250 (3.93 ms).
 - Every captured scenario is accepted: static, motion, camera cut, SDR,
   dynamic resolution, sharpening, several output sizes and the 1080p target
   ([validation](VALIDATION.md#fsr4-acceptance)).

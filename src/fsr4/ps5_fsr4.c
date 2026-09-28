@@ -64,13 +64,13 @@ struct ps5fsr4_context {
     int wave64;                         /* subgroupSizeControl offers 64 for compute */
 };
 
-/* Passes measured faster as wave64 on the PS5 (1280x720 -> 1920x1080, GPU ms
- * wave32 -> wave64): model passes 7, 8, 9 and 10 and the postpass (0.47->0.36,
- * 0.50->0.35, 0.95->0.72, 0.47->0.37, 1.19->0.90). The others are as fast or
- * faster as wave32; pass 4 measured 0.48 either way and pass 12 0.30->0.38.
- * Their only subgroup operations are the model-weight check's all-true vote
- * and lane index/count, so the size does not change results. */
-static const uint32_t fsr4_wave64_passes = (1u << 15) | (1u << 17) | (1u << 19) | (1u << 21) | (1u << 27);
+/* Passes that run faster as wave64 on the PS5: model passes 7 to 11. At
+ * 1280x720 -> 1920x1080 a frame took 3.85 ms with every pass as wave32 or with
+ * every model pass and the pre/postpass as wave64, 3.77 ms with the postpass
+ * also wave64, and 3.745 ms with this table. Their only subgroup operations
+ * are the model-weight check's all-true vote and lane index/count, so the
+ * size does not change results. */
+static const uint32_t fsr4_wave64_passes = (1u << 15) | (1u << 17) | (1u << 19) | (1u << 21) | (1u << 23);
 
 static const VkAllocationCallbacks *allocator(const ps5fsr4_context *c)
 {
