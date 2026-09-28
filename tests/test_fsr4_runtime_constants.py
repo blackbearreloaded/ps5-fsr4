@@ -91,7 +91,10 @@ class RuntimeConstants(unittest.TestCase):
     def check_geometry(self, name, scenario):
         if not MANIFEST.is_file():
             self.skipTest("generated runtime tables unavailable")
-        rules = [p["groups"] for p in json.loads(MANIFEST.read_text())["passes"]]
+        manifest = json.loads(MANIFEST.read_text())
+        rules = [p["groups"] for p in manifest["passes"]]
+        # A generated postpass head runs per H pixel in place of the captured border clear.
+        replaced = {26} & set(manifest.get("int8_kernels", []))
         _, graph, dispatches, (ow, oh), render = self.load(name)
         names = {r["resourceId"]: r["name"] for r in graph["resources"]}
         sizes = {names[t["resourceId"]]: (t["width"], t["height"]) for t in graph["textures"]}
@@ -101,6 +104,8 @@ class RuntimeConstants(unittest.TestCase):
         for frame in range(len(dispatches) // per):
             _, (rw, rh), _ = probe_parameters(scenario, frame, render)
             for index, (rule, tensor, limit_w, limit_h) in enumerate(rules[:per]):
+                if index in replaced:
+                    continue
                 groups, luma = (ctypes.c_uint32 * 3)(), (ctypes.c_uint32 * 2)()
                 self.assertEqual(self.lib.fsr4_test_groups(render[0], render[1], ow, oh, rw, rh,
                                                            RULES.index(rule), tensor, limit_w, limit_h,

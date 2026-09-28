@@ -125,6 +125,18 @@ class ModelGuard(unittest.TestCase):
             self.assertNotIn("SubgroupLocalInvocationId", text)
             self.assertNotIn("OpBranchConditional", text)
 
+    def test_dead_code_removal_keeps_live_work(self):
+        tools, builder = tools_or_skip()
+        with tempfile.TemporaryDirectory() as tmp:
+            spv = assemble(tools, tmp, LAYERED)
+            code = builder.specialize_single_layer(spv.read_bytes())
+            spv.write_bytes(builder.remove_dead_code(code))
+            subprocess.run([tools[1], "--target-env", "vulkan1.3", str(spv)], check=True)
+            text = disassemble(tools, spv)
+            self.assertNotIn("OpIAdd", text)            # the generic body's result was unused
+            self.assertNotIn("OpIEqual", text)          # the branch now tests a constant
+            self.assertIn("OpBranchConditional %true", text)
+
     def test_single_layer_drops_generic_body(self):
         tools, builder = tools_or_skip()
         with tempfile.TemporaryDirectory() as tmp:

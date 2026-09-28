@@ -286,6 +286,163 @@ def specialize_single_layer(code):
     return branch_on_constants(code, words, conditions)
 
 
+OP_EXT_INST_IMPORT, OP_EXT_INST, OP_TYPE_INT, OP_UCONVERT, OP_BITCAST, OP_IADD = 11, 12, 21, 113, 124, 128
+DECORATION_BINDING, DECORATION_DESCRIPTOR_SET, GLSL_SCLAMP, OP_LABEL = 33, 34, 45, 248
+# IAdd ISub IMul ShiftRightLogical ShiftRightArithmetic ShiftLeftLogical BitwiseOr BitwiseAnd
+PURE_INTEGER_OPS = {128, 130, 132, 194, 195, 196, 197, 199}
+# Dwords from the postpass's top-left R0 tap (padded row y, column x) to its pixel's latent,
+# which the generated head writes at padded (x + 1, y + 1) of the RA base (962-wide H rows).
+LATENT_OFFSET = (fsr4_int8_kernels.BASES["RA"] + (fsr4_int8_kernels.LEVELS["H"][0] + 1) * 16) // 4
+
+
+def route_postpass_latent(code, latent_offset):
+    """Make the converted postpass read its learned head's result instead of computing it.
+
+    The head ends in four saturated, packed words (channels 4n..4n+3, clamped
+    with SClamp and bitcast to uint). The first scratch access reads the top-left
+    tap of the pixel's 3x3 neighbourhood; the generated head kernel wrote the
+    same pixel's latent `latent_offset` dwords further on. Each packed word
+    becomes a copy of that load, which leaves the whole head dead.
+    """
+    words = list(struct.unpack(f"<{len(code) // 4}I", code))
+    sets, bindings, defs, blocks, first_function, glsl, block = {}, {}, {}, {}, None, None, None
+    order = []
+    for i, op, count in instructions(words):
+        if op == OP_DECORATE and words[i + 2] == DECORATION_DESCRIPTOR_SET:
+            sets[words[i + 1]] = words[i + 3]
+        elif op == OP_DECORATE and words[i + 2] == DECORATION_BINDING:
+            bindings[words[i + 1]] = words[i + 3]
+        elif op == OP_EXT_INST_IMPORT and bytes(struct.pack(f"<{count - 2}I", *words[i + 2:i + count])).startswith(b"GLSL.std.450"):
+            glsl = words[i + 1]
+        elif op == OP_FUNCTION and first_function is None:
+            first_function = i
+        elif op == OP_LABEL:
+            block = words[i + 1]
+        if first_function is not None and count >= 3:
+            order.append((i, op, count))
+            if words[i + 2] not in defs:
+                defs[words[i + 2]] = i
+                blocks[words[i + 2]] = block
+    scratch = next(v for v in sets if sets[v] == 1 and bindings.get(v) == 11)
+    chain = next(i for i, op, count in order if op == OP_ACCESS_CHAIN and count == 6 and words[i + 3] == scratch)
+    pointer_type, chain_id, zero, tap = words[chain + 1], words[chain + 2], words[chain + 4], words[chain + 5]
+    load = next(i for i, op, count in order if op == OP_LOAD and words[i + 3] == chain_id)
+    uint = words[load + 1]
+    clamps = [words[i + 2] for i, op, count in order
+              if op == OP_EXT_INST and words[i + 3] == glsl and words[i + 4] == GLSL_SCLAMP]
+    if len(clamps) != 16:
+        raise SystemExit(f"postpass: expected the head's 16 SClamps, found {len(clamps)}")
+    packed = []
+    for clamp in clamps[-4:]:
+        convert = [words[i + 2] for i, op, count in order if op == OP_UCONVERT and words[i + 3] == clamp]
+        bitcast = [i for i, op, count in order if op == OP_BITCAST and len(convert) == 1 and words[i + 3] == convert[0]]
+        if len(bitcast) != 1 or words[bitcast[0] + 1] != uint:
+            raise SystemExit("postpass: the head's packed latent words are not where expected")
+        packed.append(bitcast[0])
+    constants = {}
+    for i, op, count in instructions(words):
+        if op == OP_CONSTANT and count == 4 and words[i + 1] == uint:
+            constants.setdefault(words[i + 3], words[i + 2])
+    new_constants = []
+    for value in (latent_offset, 1, 2, 3):
+        if value not in constants:
+            constants[value], words[3] = words[3], words[3] + 1
+            new_constants += [(4 << 16) | OP_CONSTANT, uint, constants[value], value]
+    # The tap's address is computed inside that tap's bounds check; its inputs (the pixel's
+    # coordinates) come from blocks that dominate the head. Recompute it where the packed
+    # words are made.
+    clones, renamed = [], {}
+
+    def clone(ident):
+        if ident in renamed or ident not in defs or blocks[ident] != blocks[tap]:
+            return
+        i = defs[ident]
+        op, count = words[i] & 0xffff, words[i] >> 16
+        if op not in PURE_INTEGER_OPS:
+            raise SystemExit(f"postpass: unexpected opcode {op} in the tap address")
+        for operand in words[i + 3:i + count]:
+            clone(operand)
+        renamed[ident], words[3] = words[3], words[3] + 1
+        clones.extend([words[i], words[i + 1], renamed[ident]] + [renamed.get(o, o) for o in words[i + 3:i + count]])
+
+    clone(tap)
+    base, words[3] = words[3], words[3] + 1
+    loads = clones + [(5 << 16) | OP_IADD, uint, base, renamed[tap], constants[latent_offset]]
+    latent = []
+    for n in range(4):
+        index = base
+        if n:
+            index, words[3] = words[3], words[3] + 1
+            loads += [(5 << 16) | OP_IADD, uint, index, base, constants[n]]
+        pointer, value, words[3] = words[3], words[3] + 1, words[3] + 2
+        loads += [(6 << 16) | OP_ACCESS_CHAIN, pointer_type, pointer, scratch, zero, index,
+                  (4 << 16) | OP_LOAD, uint, value, pointer]
+        latent.append(value)
+    if len({blocks[words[i + 2]] for i in packed}) != 1:
+        raise SystemExit("postpass: the packed latent words are made in different blocks")
+    result = words[:5]
+    for i, op, count in instructions(words):
+        if i == first_function:
+            result += new_constants
+        if i == min(packed):
+            result += loads
+        if i in packed:
+            result += [(4 << 16) | OP_COPY_OBJECT, uint, words[i + 2], latent[packed.index(i)]]
+        else:
+            result += words[i:i + count]
+    return struct.pack(f"<{len(result)}I", *result)
+
+
+# Side-effect-free instructions with a result: loads and access chains, conversions,
+# composites, arithmetic, bit and comparison operations, selects, phis and GLSL.std.450
+# ext-insts (the only extended set dxil-spirv emits here).
+PURE_OPS = {12, 61, 65, 77, 79, 80, 81, 82, 83, 109, 110, 111, 112, 113, 114, 115, 124, 126, 127, 128, 129,
+            130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 164, 165, 166, 167, 168, 169, 170, 171,
+            172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191,
+            194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 245}
+OP_NAME, OP_MEMBER_NAME, OP_MEMBER_DECORATE = 5, 6, 72
+
+
+def remove_dead_code(code):
+    """Drop side-effect-free instructions whose results are unused, until none is left.
+
+    spirv-opt's aggressive pass keeps the converted postpass's dead learned head, so this
+    simpler pass removes it; empty branches are left for the backend compiler.
+    """
+    words = list(struct.unpack(f"<{len(code) // 4}I", code))
+    first_function = next(i for i, op, _ in instructions(words) if op == OP_FUNCTION)
+    uses, producer, operands = {}, {}, {}
+    for i, op, count in instructions(words):
+        if i < first_function:
+            continue
+        if op in PURE_OPS:
+            producer[words[i + 2]] = i
+            operands[i] = words[i + 3:i + count]
+            refs = operands[i]
+        else:
+            refs = words[i + 1:i + count]
+        for ref in refs:
+            uses[ref] = uses.get(ref, 0) + 1
+    dead = set()
+    work = [i for result, i in producer.items() if not uses.get(result)]
+    while work:
+        i = work.pop()
+        if i in dead:
+            continue
+        dead.add(i)
+        for ref in operands[i]:
+            uses[ref] -= 1
+            if not uses[ref] and ref in producer and producer[ref] not in dead:
+                work.append(producer[ref])
+    removed = {words[i + 2] for i in dead}
+    result = words[:5]
+    for i, op, count in instructions(words):
+        if i in dead or (op in (OP_NAME, OP_DECORATE, OP_MEMBER_NAME, OP_MEMBER_DECORATE) and words[i + 1] in removed):
+            continue
+        result += words[i:i + count]
+    return struct.pack(f"<{len(result)}I", *result)
+
+
 def capabilities(code):
     words = struct.unpack(f"<{len(code) // 4}I", code)
     found, i = set(), 5
@@ -342,9 +499,10 @@ def main():
     parser.add_argument("--fp32-fma", choices=("explicit", "compiler-default"), default="explicit")
     parser.add_argument("--keep-model-guards", action="store_true",
                         help="Keep the runtime model comparison and fallback in passes 3, 6-9 and 11")
-    parser.add_argument("--int8-kernels", default="",
+    parser.add_argument("--int8-kernels", default=",".join(map(str, fsr4_int8_kernels.DEFAULT)),
                         help="Comma-separated dispatch indices whose converted shader is replaced by a "
-                             f"generated packed-i16 kernel (available: {sorted(fsr4_int8_kernels.PASSES)})")
+                             f"generated packed-i16 kernel (available: {sorted(fsr4_int8_kernels.PASSES)}; "
+                             "an empty value keeps every converted shader)")
     args = parser.parse_args()
     generated = {int(i) for i in args.int8_kernels.split(",") if i}
     if generated - set(fsr4_int8_kernels.PASSES):
@@ -387,8 +545,17 @@ def main():
             if weights is None:
                 raise ValueError("Model initializers are needed before pass %d" % index)
             code = generate_kernel(index, weights, bindings, out)
+        if index == fsr4_int8_kernels.POSTPASS and fsr4_int8_kernels.POSTHEAD in generated:
+            spv = out / f"pass{index}.spv"
+            spv.write_bytes(remove_dead_code(route_postpass_latent(code, LATENT_OFFSET)))
+            code = strip_dead_code(spv, False)
+            if any(op == OP_EXT_INST and w[i + 4] == GLSL_SCLAMP
+                   for w in [struct.unpack(f"<{len(code) // 4}I", code)] for i, op, _ in instructions(w)):
+                raise SystemExit("postpass: the learned head survived dead-code removal")
         emit_code(header, index, code, bindings)
         rule = group_rule(index, dispatch, dxil, output)
+        if index == fsr4_int8_kernels.POSTHEAD and index in generated:
+            rule = ("NETWORK", 1, 0, 0)  # the head runs per H pixel, not over the border
         passes.append((index, constants_kind(index, dispatch), rule, len(bindings)))
         identities.append(dict(index=index, entry=dispatch["entryPoint"], dxil_sha256=sha(dxil.read_bytes()),
                                spirv_sha256=sha(code), constants=passes[-1][1], bindings=bindings,

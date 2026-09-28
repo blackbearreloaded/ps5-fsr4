@@ -38,11 +38,14 @@ A pipeline cache is only valid for the `libps5vk.a` build that saved it; see
 [the SDK guide](docs/FSR4_SDK.md).
 
 The pass tables come from `tools/build_fsr4_runtime.py`. Its `--int8-kernels`
-option takes dispatch indices (3, 5, 9, 11, 13, 15, 17, 19, 21, 23, 25: network
-passes 1, 2 and 4-12) and replaces those converted shaders with packed-i16
-kernels that `tools/fsr4_int8_kernels.py` generates from the local model; they
+option takes the dispatch indices whose converted shaders are replaced by
+packed-i16 kernels that `tools/fsr4_int8_kernels.py` generates from the local
+model. The default, 3, 5, 9, 11, 21, 23 and 25 (network passes 1, 2, 4, 5 and
+10-12), is the set the PS5 runs faster; 13, 15, 17 and 19 (passes 6-9) and 26
+(the postpass head, run in place of its border clear) are also available. They
 produce byte-identical output and bake the model's weights, so the generated
-sources stay in the build tree like the converted shaders.
+sources stay in the build tree like the converted shaders; an empty value keeps
+every converted shader.
 
 ## Native FSR4 applications
 
