@@ -88,6 +88,14 @@ ps5fsr4_result ps5fsr4_get_memory_requirements(const ps5fsr4_context_desc *desc,
                                                ps5fsr4_memory_requirements *requirements);
 ps5fsr4_result ps5fsr4_dispatch(ps5fsr4_context *context, const ps5fsr4_dispatch_desc *desc);
 
+/* Diagnostics: record only passes [first_pass, first_pass + pass_count) of one
+ * frame, for per-pass profiling. A frame must be recorded in order, starting
+ * with first_pass 0; separately submitted ranges need the application to
+ * order them (e.g. submit and wait). ps5fsr4_dispatch records all passes. */
+uint32_t ps5fsr4_pass_count(void);
+ps5fsr4_result ps5fsr4_dispatch_passes(ps5fsr4_context *context, const ps5fsr4_dispatch_desc *desc,
+                                       uint32_t first_pass, uint32_t pass_count);
+
 /* Halton(2,3) jitter sequence used by FidelityFX upscalers. */
 uint32_t ps5fsr4_jitter_phase_count(uint32_t render_width, uint32_t output_width);
 void ps5fsr4_jitter_offset(uint32_t index, uint32_t phase_count, float *x, float *y);

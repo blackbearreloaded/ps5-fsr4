@@ -425,6 +425,15 @@ static int finite_float(float x)
 
 ps5fsr4_result ps5fsr4_dispatch(ps5fsr4_context *c, const ps5fsr4_dispatch_desc *d)
 {
+    return ps5fsr4_dispatch_passes(c, d, 0, FSR4_PASS_COUNT);
+}
+
+ps5fsr4_result ps5fsr4_dispatch_passes(ps5fsr4_context *c, const ps5fsr4_dispatch_desc *d,
+                                       uint32_t first_pass, uint32_t pass_count)
+{
+    if (!c || !d || first_pass >= FSR4_PASS_COUNT || !pass_count || pass_count > FSR4_PASS_COUNT - first_pass)
+        return PS5FSR4_ERROR_INVALID_ARGUMENT;
+    const uint32_t end = first_pass + pass_count;
     if (!c || !d || d->struct_size != sizeof(*d) || !d->command_buffer || !d->color || !d->depth ||
         !d->motion_vectors || !d->output || !d->render_width || !d->render_height ||
         d->render_width > c->desc.max_render_width || d->render_height > c->desc.max_render_height ||
@@ -433,19 +442,21 @@ ps5fsr4_result ps5fsr4_dispatch(ps5fsr4_context *c, const ps5fsr4_dispatch_desc 
     if (fsr4_layout_supports_render(&c->layout, d->render_width, d->render_height))
         return PS5FSR4_ERROR_UNSUPPORTED;
     VkCommandBuffer cmd = d->command_buffer;
-    write_constants(c, d);
-    for (uint32_t i = 0; i < FSR4_PASS_COUNT; ++i)
-        write_descriptors(c, i, d);
-    if (!c->initialized)
-        clear_state(c, cmd);
+    if (first_pass == 0) {  /* a frame starts: constants and bindings for all of its passes */
+        write_constants(c, d);
+        for (uint32_t i = 0; i < FSR4_PASS_COUNT; ++i)
+            write_descriptors(c, i, d);
+        if (!c->initialized)
+            clear_state(c, cmd);
+    }
     const VkMemoryBarrier between = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_SHADER_WRITE_BIT,
                                      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
-    for (uint32_t i = 0; i < FSR4_PASS_COUNT; ++i) {
+    for (uint32_t i = first_pass; i < end; ++i) {
         uint32_t groups[3];
         const struct fsr4_pass_info *p = &fsr4_passes[i];
         fsr4_pass_groups(&c->layout, p->groups, p->tensor, p->limit_width, p->limit_height,
                          d->render_width, d->render_height, groups);
-        if (i)
+        if (i > first_pass)
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                  0, 1, &between, 0, NULL, 0, NULL);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->pipelines[i].pipeline);
@@ -453,9 +464,16 @@ ps5fsr4_result ps5fsr4_dispatch(ps5fsr4_context *c, const ps5fsr4_dispatch_desc 
                                 FSR4_DESCRIPTOR_SETS, c->pipelines[i].sets, 0, NULL);
         vkCmdDispatch(cmd, groups[0], groups[1], groups[2]);
     }
-    c->initialized = 1;
-    c->previous_pre_exposure = d->pre_exposure;
+    if (end == FSR4_PASS_COUNT) {
+        c->initialized = 1;
+        c->previous_pre_exposure = d->pre_exposure;
+    }
     return PS5FSR4_OK;
+}
+
+uint32_t ps5fsr4_pass_count(void)
+{
+    return FSR4_PASS_COUNT;
 }
 
 uint32_t ps5fsr4_jitter_phase_count(uint32_t render_width, uint32_t output_width)
