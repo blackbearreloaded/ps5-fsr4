@@ -25,6 +25,10 @@ import fsr4_int8_kernels  # noqa: E402
 from build_fsr4_frame import blob, load_capture  # noqa: E402
 
 PASSES = 28
+# Dispatches compiled as wave64 by default (the tables header carries the set to src/ps5_fsr4.c):
+# network passes 6-11. A looped kernel's weight stream costs as much per wave as per lane-row,
+# so wave64 halves it per pixel (pass 6: 0.090 -> 0.066 ms).
+WAVE64_DEFAULT = (13, 15, 17, 19, 21, 23)
 # CsTensorSizes rows as pyramid levels (row k holds output / 2^level, rounded up to 8 first).
 FSR4_TENSOR_LEVEL = (1, 0, 1, 1, 2, 2, 2, 3, 3, 3, 2, 2, 1, 1, 0, 0, 0)
 NAMED_ROLES = {
@@ -519,12 +523,18 @@ def main():
     parser.add_argument("--int8-banks", default="",
                         help="dispatch:banks pairs, e.g. 13:4: that generated kernel splits its outputs "
                              "over as many workgroup layers")
+    parser.add_argument("--wave64", default=",".join(map(str, WAVE64_DEFAULT)),
+                        help="Comma-separated dispatch indices compiled as wave64 where the driver offers it "
+                             "(the rest run as wave32)")
     parser.add_argument("--int8-loops", default=",".join(map(str, fsr4_int8_kernels.DEFAULT_LOOPS)),
                         help="Comma-separated dispatch indices generated in loop form, weights streamed "
                              f"from a table (available: {list(fsr4_int8_kernels.LOOPED)}; an empty value "
                              "generates none)")
     args = parser.parse_args()
     looped = {int(i) for i in args.int8_loops.split(",") if i}
+    wave64 = {int(i) for i in args.wave64.split(",") if i}
+    if wave64 - set(range(PASSES)):
+        raise SystemExit(f"--wave64 names dispatches outside 0-{PASSES - 1}: {sorted(wave64 - set(range(PASSES)))}")
     generated = {int(i) for i in args.int8_kernels.split(",") if i} | looped
     tables = []
     banked = {int(k): int(v) for k, v in (item.split(":") for item in args.int8_banks.split(",") if item)}
@@ -629,12 +639,14 @@ def main():
     header.append("static const uint32_t fsr4_weights[] = {" + ",".join(
         hex(w) for w in struct.unpack(f"<{len(padded) // 4}I", padded)) + "};")
     header.append(f"#define FSR4_WEIGHTS_BYTES {len(padded) if tables else len(weights)}u")
+    header.append(f"#define FSR4_WAVE64_PASSES 0x{sum(1 << i for i in wave64):x}u")
     table = "\n".join(header) + "\n"
     (out / "fsr4_passes.h").write_text(table)
     manifest = dict(capture_graph_sha256=json.loads((capture / "complete.json").read_text())["graph_sha256"],
                     original_graph_sha256=json.loads((original / "complete.json").read_text())["graph_sha256"],
                     fp32_fma=args.fp32_fma, model_guards=bool(args.keep_model_guards),
                     int8_kernels=sorted(generated), int8_loops=sorted(looped), weight_table_words=len(tables),
+                    wave64=sorted(wave64),
                     int8_banks={str(k): v for k, v in sorted(banked.items())},
                     weights_sha256=sha(weights), table_sha256=sha(table.encode()),
                     converter_patch_sha256=sha((ROOT / "tools/dxil-spirv-fsr4-fp16.patch").read_bytes()),

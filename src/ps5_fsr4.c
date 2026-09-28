@@ -64,13 +64,18 @@ struct ps5fsr4_context {
     int wave64;                         /* subgroupSizeControl offers 64 for compute */
 };
 
-/* Passes that run faster as wave64 on the PS5: model passes 7 to 11. At
- * 1280x720 -> 1920x1080 a frame took 3.85 ms with every pass as wave32 or with
- * every model pass and the pre/postpass as wave64, 3.77 ms with the postpass
- * also wave64, and 3.745 ms with this table. Their only subgroup operations
- * are the model-weight check's all-true vote and lane index/count, so the
- * size does not change results. */
+/* Passes that run faster as wave64 on the PS5, chosen with the pass tables
+ * (tools/build_fsr4_runtime.py --wave64). For the converted shaders alone the
+ * best set was model passes 7 to 11: at 1280x720 -> 1920x1080 a frame took
+ * 3.85 ms with every pass as wave32 or with every model pass and the
+ * pre/postpass as wave64, 3.77 ms with the postpass also wave64, and 3.745 ms
+ * with that set. Their only subgroup operations are the model-weight check's
+ * all-true vote and lane index/count, so the size does not change results. */
+#ifdef FSR4_WAVE64_PASSES
+static const uint32_t fsr4_wave64_passes = FSR4_WAVE64_PASSES;
+#else
 static const uint32_t fsr4_wave64_passes = (1u << 15) | (1u << 17) | (1u << 19) | (1u << 21) | (1u << 23);
+#endif
 
 static const VkAllocationCallbacks *allocator(const ps5fsr4_context *c)
 {

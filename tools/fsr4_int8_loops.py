@@ -1,9 +1,9 @@
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Looped packed-i16 kernels for the E-level network passes.
+"""Looped packed-i16 kernels for the network passes whose unrolled code outgrows the I-cache.
 
-Unrolled, the E-level passes (6-9) are bound by instruction fetch: every wave streams
-100-150 KB of straight-line code through a 32 KB instruction cache. Here each layer
+Unrolled, the E-level passes (6-9) and pass 11 are bound by instruction fetch: every
+wave streams 67-150 KB of straight-line code through a 32 KB instruction cache. Here each layer
 runs as a loop whose body fits the cache, and the body's weight pairs stream through
 the scalar cache from a table after the model, one block of words per iteration:
 

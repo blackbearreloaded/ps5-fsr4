@@ -46,9 +46,11 @@ and 26 (the postpass head, run in place of its border clear) are also
 available. `--int8-loops` takes the dispatch indices generated in loop form by
 `tools/fsr4_int8_loops.py`, whose loop bodies fit the instruction cache and
 stream their weight pairs from a table after the model; its default is 13, 15,
-17 and 19. All of them produce byte-identical output and bake the model's
+17, 19 and 23. All of them produce byte-identical output and bake the model's
 weights, so the generated sources stay in the build tree like the converted
-shaders; empty values keep every converted shader.
+shaders; empty values keep every converted shader. `--wave64` lists the
+dispatches compiled as wave64 (default 13-23, the odd ones: network passes
+6-11); the tables header carries the set to the runtime.
 
 ## Native FSR4 applications
 
