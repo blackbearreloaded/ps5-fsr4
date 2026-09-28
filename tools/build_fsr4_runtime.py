@@ -21,6 +21,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from fsr4_paths import TOOLCHAIN_BIN  # noqa: E402
+import fsr4_int8_kernels  # noqa: E402
 from build_fsr4_frame import blob, load_capture  # noqa: E402
 
 PASSES = 28
@@ -312,6 +313,18 @@ def strip_dead_code(spv, guard_removed):
     return code
 
 
+def generate_kernel(index, model, bindings, out):
+    """Packed-i16 kernel for dispatch `index`, compiled to validated SPIR-V; returns its words."""
+    source, groups = fsr4_int8_kernels.generate(index, model, bindings)
+    glsl, spv = out / f"pass{index}.comp", out / f"pass{index}.spv"
+    glsl.write_text(source)
+    subprocess.run([str(TOOLCHAIN_BIN / "glslangValidator"), "--target-env", "vulkan1.3", "-o", str(spv), str(glsl)],
+                   check=True, stdout=subprocess.DEVNULL)
+    subprocess.run([str(TOOLCHAIN_BIN / "spirv-val"), "--target-env", "vulkan1.3", str(spv)], check=True)
+    print(f"pass {index}: generated packed-i16 kernel, {groups} i16 groups", file=sys.stderr)
+    return spv.read_bytes()
+
+
 def emit_code(header, index, code, bindings):
     words = struct.unpack(f"<{len(code) // 4}I", code)
     header.append(f"static const uint32_t fsr4_code{index}[] = {{" + ",".join(hex(w) for w in words) + "};")
@@ -329,7 +342,13 @@ def main():
     parser.add_argument("--fp32-fma", choices=("explicit", "compiler-default"), default="explicit")
     parser.add_argument("--keep-model-guards", action="store_true",
                         help="Keep the runtime model comparison and fallback in passes 3, 6-9 and 11")
+    parser.add_argument("--int8-kernels", default="",
+                        help="Comma-separated dispatch indices whose converted shader is replaced by a "
+                             f"generated packed-i16 kernel (available: {sorted(fsr4_int8_kernels.PASSES)})")
     args = parser.parse_args()
+    generated = {int(i) for i in args.int8_kernels.split(",") if i}
+    if generated - set(fsr4_int8_kernels.PASSES):
+        raise SystemExit(f"no generated kernel for dispatch {sorted(generated - set(fsr4_int8_kernels.PASSES))}")
     capture, original = args.capture.resolve(), args.original.resolve()
     graph = load_capture(capture, json.loads((capture / "complete.json").read_text())["graph_sha256"])
     old = load_capture(original, json.loads((original / "complete.json").read_text())["graph_sha256"])
@@ -364,6 +383,10 @@ def main():
             spv = out / f"pass{index}.spv"
             spv.write_bytes(specialized)
             code = strip_dead_code(spv, guard_removed)
+        if index in generated:
+            if weights is None:
+                raise ValueError("Model initializers are needed before pass %d" % index)
+            code = generate_kernel(index, weights, bindings, out)
         emit_code(header, index, code, bindings)
         rule = group_rule(index, dispatch, dxil, output)
         passes.append((index, constants_kind(index, dispatch), rule, len(bindings)))
@@ -412,6 +435,7 @@ def main():
     manifest = dict(capture_graph_sha256=json.loads((capture / "complete.json").read_text())["graph_sha256"],
                     original_graph_sha256=json.loads((original / "complete.json").read_text())["graph_sha256"],
                     fp32_fma=args.fp32_fma, model_guards=bool(args.keep_model_guards),
+                    int8_kernels=sorted(generated),
                     weights_sha256=sha(weights), table_sha256=sha(table.encode()),
                     converter_patch_sha256=sha((ROOT / "tools/dxil-spirv-fsr4-fp16.patch").read_bytes()),
                     passes=identities)
