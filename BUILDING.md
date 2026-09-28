@@ -26,7 +26,9 @@ make check    # host tests
 `make driver-sdk` stages the driver SDK with the profile FSR4 needs:
 `PS5VK_SHADER_INT8_DIAGNOSTIC`, `PS5VK_SHADER_INT16_DIAGNOSTIC`,
 `PS5VK_SUBGROUP_ALL_DIAGNOSTIC` and `PS5VK_EXTENDED_COMPUTE_DIAGNOSTIC`. The FSR4
-tools copy it into `dist-sdk` whenever it changes. To build against a driver
+tools copy it into `dist-sdk` whenever it changes. The driver's own `make check`
+restages its SDK without this profile, so `make sdk` restages it first; after
+running the driver tests, run `make driver-sdk` before building FSR4 applications. To build against a driver
 checkout elsewhere, set `PS5VK_ROOT` for the tools and `DRIVER` for make.
 
 A pipeline cache is only valid for the `libps5vk.a` build that saved it; see

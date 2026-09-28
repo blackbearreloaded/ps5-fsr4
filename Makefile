@@ -38,9 +38,10 @@ fsr4-dxil-converter:
 	build/fsr4_dxil_to_spirv --self-test
 
 # Pass tables from the local reference exports, then dist-sdk: the driver SDK plus libps5_fsr4.a.
+# The driver SDK is restaged first because the driver's own tests restage it without the profile.
 runtime: fsr4-dxil-converter
 	$(PYTHON) tools/build_fsr4_runtime.py
-sdk: runtime
+sdk: driver-sdk runtime
 	$(PYTHON) tools/build_fsr4_sdk.py
 demo:
 	$(PYTHON) tools/build_fsr4_demo.py
