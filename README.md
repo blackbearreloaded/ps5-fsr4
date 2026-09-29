@@ -132,5 +132,7 @@ brief descriptions. This repository remains public.
 
 ## License
 
+Built with the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk) by John Törnblom (ps5-payload-dev).
+
 Project code is GPL-3.0-or-later. See [LICENSE](LICENSE) and
 [LICENSING.md](LICENSING.md) for credits and the driver and AMD terms.

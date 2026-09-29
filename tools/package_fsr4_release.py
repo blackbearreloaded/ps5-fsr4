@@ -86,7 +86,7 @@ def third_party():
 | ps5-agc-gears (Manuel Pereira) | `libps5vk.a` | GPL-3.0-or-later |
 | opengnm-psbc (OpenGNM and Mesa contributors) | `libpsbc.a` | MIT, `opengnm-psbc-LICENSE` |
 | ps5-native-app-boilerplate at `{PINS['app_template']['commit'][:12]}` (BlackBearReloaded) | app start-up code, `sce_module/libc.prx` | GPL-3.0-or-later |
-| PS5 payload SDK v0.42 (https://github.com/ps5-payload-dev/sdk) | C and C++ runtime | its own terms |
+| PS5 Payload SDK v0.42 by John Törnblom (https://github.com/ps5-payload-dev/sdk) | C and C++ runtime | GPL-3.0-or-later; FreeBSD-derived parts BSD; LLVM runtimes Apache-2.0 WITH LLVM-exception |
 | Vulkan-Headers (The Khronos Group) | SDK headers | Apache-2.0 or MIT, `Vulkan-Headers-LICENSE.md` |
 | DejaVu Sans (showcase HUD text, rasterized) | the showcase's `eboot.bin` | Bitstream Vera, `DejaVu-LICENSE` |
 
