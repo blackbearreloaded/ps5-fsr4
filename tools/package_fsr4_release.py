@@ -104,7 +104,7 @@ def notices():
         "ps5-vulkan-LICENSING.md": DRIVER / "LICENSING.md",
         "opengnm-psbc-LICENSE": DRIVER / "third_party/psbc-reference/LICENSE",
         "Vulkan-Headers-LICENSE.md": DRIVER / "third_party/vulkan-headers/LICENSE.md",
-        "DejaVu-LICENSE": Path("/usr/share/doc/fonts-dejavu-core/copyright"),
+        "DejaVu-LICENSE": ROOT / "tools/notices/DejaVu-copyright",  # the Debian fonts-dejavu-core notice
     }
     missing = [str(p) for p in files.values() if not p.is_file()]
     if missing:
