@@ -25,11 +25,9 @@ This project is independent of the upstream driver project.
 **Status:** Experimental.
 
 - The `ps5_fsr4` runtime upscales 1280×720 to 1920×1080 on the PS5 in about
-  2.7 ms per frame. AMD's converted shaders alone take 3.26 ms, against
-  3.93 ms on a BC250; generated INT8 kernels run the network, including the
-  postpass's learned head, faster and produce the same bytes.
-- Outputs up to 3840×2160: in the headless benchmark 1280×720 → 2560×1440
-  takes 5.5 ms and 1920×1080 → 3840×2160 12.2 ms (3.5 ms at 1080p).
+  2.7 ms per frame, and outputs up to 3840×2160 ([performance](#performance)).
+  Generated INT8 kernels run the network, including the postpass's learned
+  head, faster than AMD's converted shaders and produce the same bytes.
 - Every captured scenario up to 2560×1440 is accepted: static, motion, camera
   cut, SDR, dynamic resolution, sharpening, several output sizes, the 1080p
   and 1440p targets and AMD's Ultra Performance model for 3× upscaling. At
@@ -38,6 +36,37 @@ This project is independent of the upstream driver project.
 - An interactive demo renders a scene, upscales it and presents it at 60 fps.
 - `tools/build_fsr4_sdk.py` stages the SDK: `libps5_fsr4.a`, its header,
   notices and a warmed pipeline cache ([FSR4 SDK](docs/FSR4_SDK.md)).
+
+## Performance
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/perf/cases-dark.svg">
+  <img alt="Milliseconds per frame on the PS5 for each render and output size, against the 16.7 ms of one 60 fps frame" src="docs/perf/cases-light.svg">
+</picture>
+
+| Render → output | Mode | Time per frame | Share of a 60 fps frame |
+| --- | --- | ---: | ---: |
+| 640×360 → 1920×1080 | Ultra Performance | 3.04 ms | 18% |
+| 1280×720 → 1920×1080 | Quality | 3.52 ms | 21% |
+| 1280×720 → 2560×1440 | Performance | 5.48 ms | 33% |
+| 1706×960 → 2560×1440 | Quality | 5.98 ms | 36% |
+| 1280×720 → 3840×2160 | Ultra Performance | 11.48 ms | 69% |
+| 1920×1080 → 3840×2160 | Performance | 12.15 ms | 73% |
+
+These times come from the headless benchmark (`tools/build_fsr4_bench.py`).
+It submits 1,800 frames back to back and times each from submission to
+completion on the GPU. The interactive demo paces frames at 60 fps and
+measures less: 2.67 ms for 1280×720 → 1920×1080. For that case AMD's
+converted shaders alone take 3.26 ms on the PS5, and 3.93 ms of GPU time on a
+BC250 at 1850 MHz.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/perf/history-dark.svg">
+  <img alt="Milliseconds per frame for 1280×720 to 1920×1080 after each optimization step, from 27 ms to 2.67 ms" src="docs/perf/history-light.svg">
+</picture>
+
+`tools/build_fsr4_perf_charts.py` draws both charts from the measurements
+recorded in it.
 
 ## Before and after
 
@@ -63,7 +92,7 @@ does (31.2 dB).*
 | `tests/` | Host tests |
 | `examples/` | Runtime test, interactive demo, comparison capture and replay witnesses |
 | `comparisons/` | Before/after captures of the demo scene, built by `tools/build_fsr4_comparisons.py` |
-| `docs/` | SDK guide, reference procedure, research notes |
+| `docs/` | SDK guide, reference procedure, research notes, performance charts |
 | `external/ps5-vulkan/` | The Vulkan driver (submodule) |
 
 Clone with `git clone --recurse-submodules`, or let `make` fetch the driver, then
