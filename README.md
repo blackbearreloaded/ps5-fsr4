@@ -31,7 +31,8 @@ This project is independent of the upstream driver project.
 - Every captured scenario up to 2560×1440 is accepted: static, motion, camera
   cut, SDR, dynamic resolution, sharpening, several output sizes, the 1080p
   and 1440p targets and AMD's Ultra Performance model for 3× upscaling. At
-  4K, one frame of four misses the rule by 0.16 dB
+  4K, motion and Ultra Performance pass too; in the static capture one frame
+  of four misses the rule by 0.16 dB
   ([validation](VALIDATION.md#fsr4-acceptance)).
 - An interactive demo renders a scene, upscales it and presents it at 60 fps.
 - `tools/build_fsr4_sdk.py` stages the SDK: `libps5_fsr4.a`, its header,

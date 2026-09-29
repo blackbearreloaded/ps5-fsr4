@@ -4,7 +4,8 @@
 ps5vk Vulkan driver. Applications record it into their own command buffers.
 It is experimental, but it is validated on hardware: every captured scenario up
 to 2560×1440 passes the [acceptance rule](../VALIDATION.md#fsr4-acceptance) on
-the PS5, and 4K comes within 0.16 dB of it.
+the PS5. At 4K, motion and Ultra Performance pass, and the static capture comes
+within 0.16 dB of the rule.
 At 1280×720 → 1920×1080 FSR4 takes about 2.7 ms per frame from submission to completion with
 the default generated network kernels, and 3.26 ms with AMD's converted shaders alone, against
 3.93 ms of GPU time for those shaders on a BC250 at 1850 MHz.
