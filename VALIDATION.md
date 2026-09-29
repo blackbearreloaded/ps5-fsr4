@@ -46,6 +46,7 @@ run.
 | up-motion | 640×360 → 1920×1080 | Ultra Performance, per-frame jitter, uniform motion vectors |
 | k2 | 1280×720 → 2560×1440 | 2K output (the 3840×2160 shader band) |
 | k2-motion | 1280×720 → 2560×1440 | 2K, per-frame jitter, uniform motion vectors |
+| k2-quality | 1706×960 → 2560×1440 | 2K, Quality mode (1.5×) |
 | k4-motion | 1920×1080 → 3840×2160 | 4K, per-frame jitter, uniform motion vectors |
 | odd | 1278×718 → 1918×1078 | output width and height not multiples of 8 |
 
