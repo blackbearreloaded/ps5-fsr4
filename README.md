@@ -47,17 +47,17 @@ This project is independent of the upstream driver project.
 
 | Render → output | Mode | Time per frame | Share of a 60 fps frame |
 | --- | --- | ---: | ---: |
-| 640×360 → 1920×1080 | Ultra Performance | 3.04 ms | 18% |
-| 1280×720 → 1920×1080 | Quality | 3.52 ms | 21% |
-| 1280×720 → 2560×1440 | Performance | 5.48 ms | 33% |
-| 1706×960 → 2560×1440 | Quality | 5.98 ms | 36% |
-| 1280×720 → 3840×2160 | Ultra Performance | 11.48 ms | 69% |
-| 1920×1080 → 3840×2160 | Performance | 12.15 ms | 73% |
+| 640×360 → 1920×1080 | Ultra Performance | 2.92 ms | 18% |
+| 1280×720 → 1920×1080 | Quality | 2.95 ms | 18% |
+| 1280×720 → 2560×1440 | Performance | 4.92 ms | 30% |
+| 1706×960 → 2560×1440 | Quality | 4.95 ms | 30% |
+| 1920×1080 → 3840×2160 | Performance | 10.86 ms | 65% |
+| 1280×720 → 3840×2160 | Ultra Performance | 10.94 ms | 66% |
 
 These times come from the headless benchmark (`tools/build_fsr4_bench.py`).
 It submits 1,800 frames back to back and times each from submission to
 completion on the GPU. The interactive demo paces frames at 60 fps and
-measures less: 2.67 ms for 1280×720 → 1920×1080. For that case AMD's
+measures less: 2.66 ms for 1280×720 → 1920×1080. For that case AMD's
 converted shaders alone take 3.26 ms on the PS5, and 3.93 ms of GPU time on a
 BC250 at 1850 MHz.
 
@@ -80,7 +80,7 @@ does (31.2 dB).*
 ![Captured on a PS5: bilinear and FSR4 upscales of 1280×720 to 3840×2160, native 4K and a 64× supersampled reference, 3× zoom](comparisons/3840x2160/hero.png)
 
 *At 4K: FSR4's Ultra Performance model upscales 1280×720, a ninth of the pixels, to
-3840×2160 in 11.5 ms (headless benchmark). It comes closer to the reference (38.6 dB) than
+3840×2160 in 10.9 ms (headless benchmark). It comes closer to the reference (38.6 dB) than
 native 4K rendering does (34.0 dB).*
 
 > [!TIP]

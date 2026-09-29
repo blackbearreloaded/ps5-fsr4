@@ -14,12 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # (output, render, mode, milliseconds per frame in the headless benchmark)
 CASES = [
-    ("1920×1080", "640×360", "Ultra Performance", 3.04),
-    ("1920×1080", "1280×720", "Quality", 3.52),
-    ("2560×1440", "1280×720", "Performance", 5.48),
-    ("2560×1440", "1706×960", "Quality", 5.98),
-    ("3840×2160", "1280×720", "Ultra Performance", 11.48),
-    ("3840×2160", "1920×1080", "Performance", 12.15),
+    ("1920×1080", "640×360", "Ultra Performance", 2.92),
+    ("1920×1080", "1280×720", "Quality", 2.95),
+    ("2560×1440", "1280×720", "Performance", 4.92),
+    ("2560×1440", "1706×960", "Quality", 4.95),
+    ("3840×2160", "1920×1080", "Performance", 10.86),
+    ("3840×2160", "1280×720", "Ultra Performance", 10.94),
 ]
 FRAME_60FPS = 1000 / 60
 

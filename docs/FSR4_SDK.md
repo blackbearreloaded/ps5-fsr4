@@ -16,12 +16,12 @@ than the per-frame time above:
 
 | Render → output | Mode | Benchmark |
 | --- | --- | ---: |
-| 1280×720 → 1920×1080 | Quality | 3.52 ms |
-| 640×360 → 1920×1080 | Ultra Performance | 3.04 ms |
-| 1706×960 → 2560×1440 | Quality | 5.98 ms |
-| 1280×720 → 2560×1440 | Performance | 5.48 ms |
-| 1920×1080 → 3840×2160 | Performance | 12.15 ms |
-| 1280×720 → 3840×2160 | Ultra Performance | 11.48 ms |
+| 1280×720 → 1920×1080 | Quality | 2.95 ms |
+| 640×360 → 1920×1080 | Ultra Performance | 2.92 ms |
+| 1706×960 → 2560×1440 | Quality | 4.95 ms |
+| 1280×720 → 2560×1440 | Performance | 4.92 ms |
+| 1920×1080 → 3840×2160 | Performance | 10.86 ms |
+| 1280×720 → 3840×2160 | Ultra Performance | 10.94 ms |
 
 ## Contents
 
@@ -117,6 +117,12 @@ one by running the runtime test on the PS5 without a cache: it saves
    Set `reset` on the first frame and on camera cuts. `motion_vector_scale`
    converts stored motion to render pixels. Set `enable_sharpening` and a
    `sharpness` in [0, 1] to run RCAS after reconstruction.
+
+   ps5vk writes back and invalidates the CPU caches over every mapped
+   `HOST_COHERENT` allocation around each submission. Unmap staging buffers
+   once their upload is done, or use non-coherent memory with
+   `vkFlushMappedMemoryRanges`: 41 MB of mapped coherent memory costs about
+   1.3 ms per submission.
 5. Save the cache with `vkGetPipelineCacheData` if it was created empty.
    Without a cache, the first context creation compiles the passes of both
    models for about 16 s. With the shipped cache it takes under 0.1 s.
