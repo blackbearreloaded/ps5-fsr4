@@ -89,12 +89,18 @@ def buffer_chain(graph):
             raise ValueError("Invalid dispatch dimensions")
     return records
 
-def build_native_app(out, source_file, title_name, extra_sources=(), include_dirs=(), libraries=()):
-    """Use the same native template, heap and public SDK for both witnesses."""
+def build_native_app(out, source_file, title_name, extra_sources=(), include_dirs=(), libraries=(),
+                     defines=(), title_id="PPSA88900", content_id="UP9000-PPSA88900_00-FSR4CLEARTEST001",
+                     sce_sys=None):
+    """Use the same native template, heap and public SDK for both witnesses.
+
+    The package is out/<title_id>. Launch assets in sce_sys (icon0.png, pic0.dds,
+    pic1.dds, snd0.at9) replace the template's generic ones where present.
+    """
     foundation, sdk, compiler, builder, gears = native_inputs()
     stage_driver_sdk()
     env = dict(os.environ, PS5_PAYLOAD_SDK=str(sdk))
-    package = out / "PPSA88900"
+    package = out / title_id
     for folder in ("sce_sys", "sce_module"):
         (package / folder).mkdir(parents=True, exist_ok=True)
     objects, crt = [], out / "crt.o"
@@ -103,7 +109,8 @@ def build_native_app(out, source_file, title_name, extra_sources=(), include_dir
     for n, source in enumerate((source_file, *extra_sources)):
         obj, dep = out / ("main.o" if n == 0 else f"extra{n}.o"), out / ("main.d" if n == 0 else f"extra{n}.d")
         subprocess.run([str(compiler), "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
-                        "-MD", "-MF", str(dep), *includes, "-c", str(source), "-o", str(obj)],
+                        "-MD", "-MF", str(dep), *("-D" + x for x in defines), *includes,
+                        "-c", str(source), "-o", str(obj)],
                        env=env, check=True)
         # Only public SDK, SDK-level FSR4 runtime and generated headers are used by this consumer.
         deps = dep.read_text()
@@ -139,14 +146,15 @@ def build_native_app(out, source_file, title_name, extra_sources=(), include_dir
     subprocess.run([str(builder), "self", "--sign", "--in", str(elf), "--out",
                     str(package / "eboot.bin"), "--magic", "0x1D3D154F"], check=True)
     param = json.loads((gears / "sce_sys/param.json").read_text())
-    param.update(titleId="PPSA88900", conceptId="88900",
-                 contentId="UP9000-PPSA88900_00-FSR4CLEARTEST001")
+    param.update(titleId=title_id, conceptId=title_id[4:], contentId=content_id)
     param["localizedParameters"]["en-US"]["titleName"] = title_name
     (package / "sce_sys/param.json").write_text(json.dumps(param, indent=2) + "\n")
     shutil.copyfile(foundation / "runtime/libc.prx", package / "sce_module/libc.prx")
-    # The shell refuses to launch PPSA88900 (0x80940033) without the launch assets.
+    # The shell refuses to launch a title (0x80940033) without the launch assets.
     for name in ("icon0.png", "pic0.dds", "pic1.dds", "snd0.at9"):
-        shutil.copyfile(foundation / "sce_sys" / name, package / "sce_sys" / name)
+        own = Path(sce_sys) / name if sce_sys else None
+        shutil.copyfile(own if own and own.is_file() else foundation / "sce_sys" / name,
+                        package / "sce_sys" / name)
 
 
 def main():
