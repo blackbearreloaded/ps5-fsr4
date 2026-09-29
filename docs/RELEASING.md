@@ -16,7 +16,7 @@ packages a release. A `v*` tag publishes that package as a GitHub pre-release.
 | `SHA256SUMS` | SHA-256 of the three assets |
 
 `notices/` holds AMD's notice for the FSR4 material (MIT; see
-[LICENSING.md](../LICENSING.md#amd-fsr4-material)), the provenance of that
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md#amd-fsr4-material)), the provenance of that
 material from AMD's SDK through the BC250 build to this one, BC250's own
 provenance note, and the licenses of everything else in the archive
 (`THIRD-PARTY.md`). `tools/package_fsr4_release.py` writes all of it, and

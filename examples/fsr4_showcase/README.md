@@ -118,7 +118,7 @@ every 120 frames.
 - `--release VERSION` also writes `ps5-fsr4-showcase-VERSION-PPSA99010.zip`,
   the package with a README, `notices/` and `SHA256SUMS`, and its SHA-256. The
   app embeds FSR4 material under AMD's MIT terms, whose notice must stay with
-  every copy ([LICENSING.md](../../LICENSING.md#amd-fsr4-material)).
+  every copy ([THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md#amd-fsr4-material)).
   `make release VERSION=...` packages the whole release
   ([docs/RELEASING.md](../../docs/RELEASING.md)).
 - `--screenshots` saves a 1920×1080 BGRA frame of each chapter during the first

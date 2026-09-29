@@ -33,7 +33,7 @@ CONSUMERS = (("fsr4_sdk_consumer.c", "-std=c11"), ("fsr4_sdk_consumer.cpp", "-st
 NOTICE = """# ps5_fsr4 provenance and notices
 
 `libps5_fsr4.a` is GPL-3.0-or-later code by BlackBearReloaded (see LICENSE and
-LICENSING.md at the SDK root). It embeds FSR 4.1.1 INT8 shaders and model data
+THIRD_PARTY_NOTICES.md at the SDK root). It embeds FSR 4.1.1 INT8 shaders and model data
 translated from the AMD FidelityFX SDK upscaler as modified by the BC250 FSR4
 project (dmoraza and daniel-h-0 with contributors). AMD / GPUOpen created FSR4.
 That material keeps its original terms; `AMD-SDK-LICENSE.md` reproduces the AMD

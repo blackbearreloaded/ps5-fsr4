@@ -1,4 +1,4 @@
-# Licensing and credits
+# Third-party notices
 
 ## FSR4 and BC250 credits
 

@@ -152,4 +152,4 @@ resolution, changes the quality mode per frame and enables sharpening.
 
 The runtime is GPL-3.0-or-later. The embedded FSR4 material stays under AMD's
 terms and credits the BC250 FSR4 project; see `share/ps5fsr4/NOTICE.md` and
-[LICENSING.md](../LICENSING.md).
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).

@@ -71,4 +71,4 @@ paths or connection addresses.
 
 The primary FSR4 porting reference is the BC250 work by dmoraza and daniel-h-0.
 AMD/GPUOpen created FSR4. Preserve all original licenses and credits; see
-[LICENSING.md](../LICENSING.md).
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).

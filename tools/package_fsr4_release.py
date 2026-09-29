@@ -72,7 +72,7 @@ with the Vulkan driver https://github.com/blackbearreloaded/ps5-vulkan at `{r['d
    pipeline cache holds them compiled for the PS5 GPU by the driver's compiler.
 
 The FSR4 material is modified, is not signed by AMD and is not an official AMD
-release. AMD / GPUOpen created FSR4. Credits: `LICENSING.md`.
+release. AMD / GPUOpen created FSR4. Credits: `THIRD_PARTY_NOTICES.md`.
 """
 
 
@@ -100,7 +100,7 @@ def notices():
         "AMD-SDK-LICENSE.md": DIST_SDK / "share/ps5fsr4/AMD-SDK-LICENSE.md",
         "BC250-PROVENANCE.md": BC250 / "notices/PROVENANCE.md",
         "LICENSE": ROOT / "LICENSE",
-        "LICENSING.md": ROOT / "LICENSING.md",
+        "THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
         "ps5-vulkan-LICENSING.md": DRIVER / "LICENSING.md",
         "opengnm-psbc-LICENSE": DRIVER / "third_party/psbc-reference/LICENSE",
         "Vulkan-Headers-LICENSE.md": DRIVER / "third_party/vulkan-headers/LICENSE.md",
