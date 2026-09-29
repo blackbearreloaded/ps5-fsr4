@@ -19,11 +19,20 @@ __declspec(dllexport) const UINT D3D12SDKVersion = 619;
 __declspec(dllexport) const char *D3D12SDKPath = ".\\D3D12\\";
 
 static FARPROC WINAPI reference_get_proc_address(HMODULE module, LPCSTR name);
+static DWORD WINAPI reference_wait(HANDLE handle, DWORD milliseconds);
 #define GetProcAddress reference_get_proc_address
+#define WaitForSingleObject reference_wait
 #define mainCRTStartup bc250_mainCRTStartup
 #include BC250_PROBE_SOURCE
 #undef mainCRTStartup
+#undef WaitForSingleObject
 #undef GetProcAddress
+
+/* The probe waits 30 s for each frame's fence; WARP can take longer at 3840x2160. */
+static DWORD WINAPI reference_wait(HANDLE handle, DWORD milliseconds)
+{
+    return WaitForSingleObject(handle, milliseconds == INFINITE ? INFINITE : 600000);
+}
 
 #ifdef FSR4_CAPTURE
 static PfnFfxDestroyContext real_destroy;
