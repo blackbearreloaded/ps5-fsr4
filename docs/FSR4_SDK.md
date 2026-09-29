@@ -42,7 +42,7 @@ make sdk      # converter, pass tables and dist-sdk
 
 - INT8 and INT16 shader arithmetic;
 - the subgroup vote;
-- sampled storage images up to 1920×1080.
+- sampled storage images up to 3840×2160.
 
 `build_fsr4_sdk.py` copies the driver SDK into `dist-sdk`, adds the FSR4 runtime,
 then links a C and a C++ consumer against a relocated copy of the SDK, using

@@ -88,11 +88,11 @@ int main(void) {
                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
 #if PS5VK_EXTENDED_COMPUTE_DIAGNOSTIC
     assert(ps5vk_storage_image_info(&image));
-    image.extent.width=1920; image.extent.height=1080;
+    image.extent.width=3840; image.extent.height=2160;
     assert(ps5vk_storage_image_info(&image));
-    image.extent.width=1921;
+    image.extent.width=3841;
     assert(!ps5vk_storage_image_info(&image));
-    image.extent.width=1920; image.extent.height=1081;
+    image.extent.width=3840; image.extent.height=2161;
     assert(!ps5vk_storage_image_info(&image));
 #else
     assert(!ps5vk_storage_image_info(&image));
