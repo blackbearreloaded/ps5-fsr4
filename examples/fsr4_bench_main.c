@@ -279,6 +279,9 @@ static int run(void)
                   VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     double upload_ms;
     if (submit(&upload_ms)) return 1;
+    /* ps5vk writes back and invalidates every mapped HOST_COHERENT range around each
+     * submission: left mapped, the uploaded inputs would add that to every timed frame. */
+    vkUnmapMemory(device, staging_memory);
     report("FSR4_BENCH_READY render=%dx%d output=%dx%d upload_ms=%.1f\n", RENDER_W, RENDER_H, OUTPUT_W, OUTPUT_H,
            upload_ms);
 

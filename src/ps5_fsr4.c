@@ -360,6 +360,10 @@ static ps5fsr4_result prepare_slot(ps5fsr4_context *c, struct fsr4_slot *slot)
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1);
     if (r) return r;
     memcpy(slot->weights.mapped, slot->family->weights, slot->family->weights_bytes);
+    /* ps5vk writes back and invalidates every mapped HOST_COHERENT range around each
+     * submission. The model is written once, so unmap it; the unmap writes it back. */
+    vkUnmapMemory(c->desc.device, slot->weights.memory);
+    slot->weights.mapped = NULL;
     for (uint32_t i = 0; i < FSR4_PIPELINES; ++i) {
         if (family_pass(slot->family, i)->groups == FSR4_GROUPS_NONE) continue;
         if ((r = create_pipeline(c, slot, i))) return r;
