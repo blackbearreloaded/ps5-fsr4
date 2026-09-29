@@ -90,6 +90,14 @@ one after another, so a frame longer than 16.7 ms waits for the next vblank. At
 The native comparison views render the scene a second time at output size,
 which costs 3.8 ms at 1080p and about 16 ms at 4K.
 
+## Download
+
+Every [pre-release](https://github.com/blackbearreloaded/ps5-fsr4/releases)
+has `ps5-fsr4-showcase-VERSION-PPSA99010.zip`, built by GitHub Actions. Extract
+it, upload the `PPSA99010` folder to `/data/homebrew/` on a PS5 running a
+homebrew loader with ShadowMountPlus, and start **PS5 FSR4 Showcase** from the
+home screen once it is registered.
+
 ## Build and install
 
 Stage the SDK first (`make sdk`, see [BUILDING.md](../../BUILDING.md)), then:
@@ -107,10 +115,12 @@ every 120 frames.
 
 `SHOWCASE_ARGS` passes options to `tools/build_fsr4_showcase.py`:
 
-- `--release VERSION` also writes `ps5-fsr4-showcase-VERSION-PPSA99010.zip`
-  and its SHA-256. The app embeds `libps5_fsr4.a` and its pipeline cache, so
-  AMD's terms apply to the zip as to any build: see
-  [LICENSING.md](../../LICENSING.md#amd-fsr4-material) before distributing it.
+- `--release VERSION` also writes `ps5-fsr4-showcase-VERSION-PPSA99010.zip`,
+  the package with a README, `notices/` and `SHA256SUMS`, and its SHA-256. The
+  app embeds FSR4 material under AMD's MIT terms, whose notice must stay with
+  every copy ([LICENSING.md](../../LICENSING.md#amd-fsr4-material)).
+  `make release VERSION=...` packages the whole release
+  ([docs/RELEASING.md](../../docs/RELEASING.md)).
 - `--screenshots` saves a 1920×1080 BGRA frame of each chapter during the first
   tour (`fsr4-showcase-NN.bgra`, next to the log).
 - `--selftest` replaces the controller with a scripted walk: every view at

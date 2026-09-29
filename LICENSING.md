@@ -42,10 +42,24 @@ derived sources. Programs linked with the staged SDK (`libps5vk.a`,
 ## AMD FSR4 material
 
 No AMD or BC250 shader, model or DLL is stored in this repository. The build
-translates local reference exports into `build/fsr4-runtime/fsr4_passes.h`,
-which `libps5_fsr4.a` embeds. That material keeps AMD's terms: the SDK stages
-`share/ps5fsr4/AMD-SDK-LICENSE.md` and a provenance notice beside it. Review
-those terms before distributing a build.
+copies the shaders and models out of the BC250 RC11 build of AMD's
+`amd_fidelityfx_upscaler_dx12.dll` into `build/fsr4-runtime/fsr4_passes.h`,
+which `libps5_fsr4.a` embeds; the pipeline cache holds them compiled for the
+PS5. AMD's notice, which the SDK stages as `share/ps5fsr4/AMD-SDK-LICENSE.md`,
+lists that DLL (`Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_dx12.dll`)
+under its MIT terms, so the material may be modified and redistributed with the
+notice. The BC250 project publishes its modified DLL the same way.
+
+## Release archives
+
+The [pre-releases](https://github.com/blackbearreloaded/ps5-fsr4/releases)
+combine GPL-3.0-or-later code (this repository, the Vulkan driver with
+ps5-agc-gears, the native app template), the MIT FSR4 material and the MIT
+shader compiler (opengnm-psbc). Every archive carries `notices/`: AMD's notice,
+the provenance of the FSR4 material, BC250's provenance note and the other
+licenses, listed in `THIRD-PARTY.md`. The corresponding source of the GPL code is
+a separate asset of each release ([docs/RELEASING.md](docs/RELEASING.md)). Keep
+the notices with any copy.
 
 ## Comparison images
 

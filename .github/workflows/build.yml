@@ -1,0 +1,113 @@
+# Copyright (C) 2026 BlackBearReloaded
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Builds the driver, the FSR4 runtime, the SDK, the demo and the showcase from
+# pinned public inputs, runs the host tests and packages a release. A v* tag
+# publishes that package as a GitHub pre-release; a manual run with a version
+# keeps it as a workflow artifact. docs/RELEASING.md has the procedure.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to package as an artifact (nothing is published)
+        required: true
+        default: 0.0.0-test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # The toolchain the pinned pipeline cache was made with: identical SPIR-V needs
+    # the same glslang and SPIRV-Tools releases, and the payload SDK uses LLVM 21.
+    container: ubuntu:26.04
+    timeout-minutes: 240
+    env:
+      VERSION: ${{ github.event.inputs.version || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '0.0.0-dev' }}
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential ca-certificates cmake curl file git glslang-tools make ninja-build \
+            pkg-config python3 python3-mako python3-numpy python3-pil python3-yaml spirv-tools \
+            tar unzip wget xz-utils zlib1g-dev fonts-dejavu-core \
+            clang-18 lld-18 llvm-18 clang-21 lld-21 llvm-21
+          git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Version
+        run: |
+          VERSION="${VERSION#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Packaging version $VERSION"
+
+      - name: Cache pinned inputs
+        uses: actions/cache@v4
+        with:
+          path: build/inputs
+          key: inputs-1-${{ hashFiles('tools/build_inputs.json') }}
+
+      - name: Fetch pinned inputs
+        run: python3 tools/fetch_build_inputs.py --github-env
+
+      - name: Build the driver, the FSR4 runtime and the SDK
+        run: make sdk
+
+      - name: Check the pipeline cache
+        run: python3 tools/fetch_build_inputs.py --check-cache
+
+      - name: Host tests
+        run: make check
+
+      - name: Build the demo and the showcase
+        run: |
+          make demo
+          make showcase SHOWCASE_ARGS="--release $VERSION"
+
+      - name: Package
+        run: python3 tools/package_fsr4_release.py --version "$VERSION"
+
+      - name: Keep the package
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: build/release/
+          retention-days: 7
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+
+      - name: Publish the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release
+          sha256sum --check SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+            --title "PS5 FSR4 ${GITHUB_REF_NAME#v}" --notes-file release-notes.md \
+            *.zip *.tar.gz SHA256SUMS

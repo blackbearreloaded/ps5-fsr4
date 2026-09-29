@@ -115,19 +115,18 @@ def build_font(out):
 
 
 def release(out, version):
-    """The package as ps5-fsr4-showcase-VERSION-PPSA99010.zip with its SHA-256."""
-    package = out / TITLE_ID
+    """The package as ps5-fsr4-showcase-VERSION-PPSA99010.zip, with a README, notices/ and
+    SHA256SUMS inside (tools/package_fsr4_release.py), and the zip's own SHA-256 beside it."""
+    import package_fsr4_release
     name = f"ps5-fsr4-showcase-{version}-{TITLE_ID}.zip"
-    archive = out / name
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
-        for path in sorted(package.rglob("*")):
-            if path.is_file():
-                z.write(path, str(path.relative_to(out)))
+    archive = package_fsr4_release.showcase_zip(out / TITLE_ID, out / name, version)
     with zipfile.ZipFile(archive) as z:
         names = set(z.namelist())
-        for required in ("eboot.bin", "sce_module/libc.prx", "sce_sys/param.json", "sce_sys/icon0.png",
-                         "sce_sys/pic0.dds", "sce_sys/pic1.dds", "sce_sys/snd0.at9", "assets/pipeline-cache.bin"):
-            if f"{TITLE_ID}/{required}" not in names:
+        for required in (*(f"{TITLE_ID}/{f}" for f in ("eboot.bin", "sce_module/libc.prx", "sce_sys/param.json",
+                                                          "sce_sys/icon0.png", "sce_sys/pic0.dds", "sce_sys/pic1.dds",
+                                                          "sce_sys/snd0.at9", "assets/pipeline-cache.bin")),
+                         "README.md", "SHA256SUMS", "notices/AMD-SDK-LICENSE.md", "notices/PROVENANCE.md"):
+            if required not in names:
                 raise SystemExit(f"{name} lacks {required}")
         param = json.loads(z.read(f"{TITLE_ID}/sce_sys/param.json"))
     if param["titleId"] != TITLE_ID or param["localizedParameters"]["en-US"]["titleName"] != TITLE_NAME:

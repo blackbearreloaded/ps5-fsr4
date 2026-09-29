@@ -2,9 +2,11 @@
 
 > [!WARNING]
 > **Experimental.** FSR4 runs natively on the PS5 and passes its acceptance
-> against the WARP reference in every captured scenario up to 2560×1440, but
-> this is not a release. The SDK is built locally from the BC250 RC11 build of
-> AMD's FSR4 provider, and it needs a diagnostic profile of the Vulkan driver.
+> against the WARP reference in every captured scenario up to 2560×1440.
+> [Pre-releases](https://github.com/blackbearreloaded/ps5-fsr4/releases) carry
+> the showcase app, the SDK and their source. The SDK is built from the BC250
+> RC11 build of AMD's FSR4 provider and needs a diagnostic profile of the Vulkan
+> driver.
 
 > [!IMPORTANT]
 > **Primary FSR4 porting credit: the BC250 FSR4 project.**
@@ -38,6 +40,10 @@ This project is independent of the upstream driver project.
 - The [showcase app](examples/fsr4_showcase/README.md) (PPSA99010) tours every
   quality mode, 1080p, 1440p and 4K output, dynamic resolution and sharpening,
   with split views against bilinear and native rendering and a paired magnifier.
+- GitHub Actions builds and tests everything from pinned public inputs on every
+  push; a `v*` tag publishes a
+  [pre-release](https://github.com/blackbearreloaded/ps5-fsr4/releases) with
+  the showcase app, the SDK and their source ([releasing](docs/RELEASING.md)).
 - `tools/build_fsr4_sdk.py` stages the SDK: `libps5_fsr4.a`, its header,
   notices and a warmed pipeline cache ([FSR4 SDK](docs/FSR4_SDK.md)).
 
@@ -106,6 +112,7 @@ native 4K rendering does (34.0 dB).*
 | `comparisons/` | Before/after captures of the demo scene at 1080p, 1440p and 4K, built by `tools/build_fsr4_comparisons.py` |
 | `docs/` | SDK guide, reference procedure, research notes, performance charts |
 | `external/ps5-vulkan/` | The Vulkan driver (submodule) |
+| `.github/workflows/` | The GitHub Actions build: tests, packages and pre-releases ([releasing](docs/RELEASING.md)) |
 
 Clone with `git clone --recurse-submodules`, or let `make` fetch the driver, then
 follow [BUILDING.md](BUILDING.md).
@@ -113,6 +120,7 @@ follow [BUILDING.md](BUILDING.md).
 ## Development
 
 - [Build instructions](BUILDING.md)
+- [Releasing](docs/RELEASING.md)
 - [FSR4 SDK](docs/FSR4_SDK.md)
 - [Validation](VALIDATION.md)
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md)

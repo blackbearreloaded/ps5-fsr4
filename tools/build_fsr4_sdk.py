@@ -68,9 +68,11 @@ def main():
                         help="Generated pass tables (tools/build_fsr4_runtime.py)")
     parser.add_argument("--pipeline-cache", type=Path, default=ROOT / "build/fsr4-runtime/pipeline-cache-ps5.bin",
                         help="Pipeline cache saved on the PS5 by this libps5vk build (optional)")
-    parser.add_argument("--amd-notice", type=Path,
-                        default=ROOT.parent / "references/bc250-fsr4-fork/dll/notices/AMD-SDK-LICENSE.md",
-                        help="AMD FidelityFX SDK notice from the pinned BC250 FSR4 checkout")
+    notices = (ROOT / "build/reference-runtime/bc250-rc11/notices/AMD-SDK-LICENSE.md",
+               ROOT.parent / "references/bc250-fsr4-fork/dll/notices/AMD-SDK-LICENSE.md")
+    parser.add_argument("--amd-notice", type=Path, default=next((p for p in notices if p.is_file()), notices[0]),
+                        help="AMD FidelityFX SDK notice from the BC250 RC11 DLL release "
+                             "(tools/fetch_build_inputs.py) or a BC250 FSR4 checkout")
     args = parser.parse_args()
     runtime = args.runtime.resolve()
     stage_driver_sdk()
@@ -125,8 +127,9 @@ def main():
             subprocess.run([str(driver), standard, "-O2", "-Wall", "-Wextra", "-Werror", "-MD", "-MF", str(dep),
                             "-I" + str(relocated / "include"), "-c", str(ROOT / "tests" / source),
                             "-o", str(consumer_obj)], env=env, check=True)
+            # The payload SDK's own headers may sit in this tree too (tools/fetch_build_inputs.py).
             leaked = [line for line in dep.read_text().split() if str(ROOT) in line and
-                      not line.startswith(str(relocated)) and not line.endswith((".o:", source))]
+                      not line.startswith((str(relocated), str(sdk))) and not line.endswith((".o:", source))]
             if leaked:
                 raise SystemExit(f"{source} used headers outside the relocated SDK: {leaked}")
             link_consumer(sdk, env, relocated / "lib", crt, consumer_obj, work / (source + ".elf"))

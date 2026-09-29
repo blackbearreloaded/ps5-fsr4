@@ -2,9 +2,18 @@
 
 ## Requirements
 
+`make inputs` fetches the pinned public inputs below (the native app template
+with its payload SDK, dxil-spirv, DXC, the BC250 DLL and the pipeline cache)
+into `build/`, and `eval "$(python3 tools/fetch_build_inputs.py --env)"` points
+the builds at them. GitHub Actions builds the same way
+([docs/RELEASING.md](docs/RELEASING.md)).
+
 - Linux (WSL works) with Python 3.11+, CMake, Ninja, a C compiler and
   `spirv-link` from SPIRV-Tools (the pass tables link the generated postpass
-  head into the converted postpass).
+  head into the converted postpass); Mako and PyYAML for the driver's shader
+  compiler; `glslangValidator`, Pillow and DejaVu Sans (`fonts-dejavu-core`) for
+  the demo and the showcase. The workflow's install step lists the Ubuntu 26.04
+  packages.
 - The payload SDK and native app template the driver's SDK builder uses: set
   `PS5_PAYLOAD_SDK` and `PS5_NATIVE_APP_TEMPLATE` as described in
   [the driver's build notes](external/ps5-vulkan/BUILDING.md).

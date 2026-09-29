@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "app_template": {
+    "repository": "https://github.com/blackbearreloaded/ps5-native-app-boilerplate.git",
+    "commit": "37dd53602bdead63936f718004555ba10154be48",
+    "path": "build/inputs/lab/third_party/ps5-native-app-boilerplate"
+  },
+  "dxil_spirv": {
+    "repository": "https://github.com/HansKristian-Work/dxil-spirv.git",
+    "commit": "f2d1b5541eac934e9c32e8aa664328915336a213",
+    "path": "build/inputs/dxil-spirv"
+  },
+  "dxc": {
+    "url": "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2607/linux_dxc_2026_07_29.x86_x64.tar.gz",
+    "sha256": "55665c87824051ed4774ff3280a79ccbbb7d39243b9736ca5e98222134112d54",
+    "members": [
+      "bin/dxc",
+      "lib/libdxcompiler.so",
+      "LICENCE-MIT.txt",
+      "LICENSE-LLVM.txt",
+      "LICENSE-MS.txt"
+    ],
+    "path": "build/reference-runtime/dxc/linux_dxc_2026_07_29.x86_x64"
+  },
+  "bc250_dll": {
+    "url": "https://github.com/daniel-h-0/bc250-fsr4-fork/releases/download/opticlient-v1.0.7-bc250.2/bc250-fsr4-dll-4.0.0-rc11-docs2.zip",
+    "sha256": "1eab11f2d9c34eebb15afe5815029c69b2d04dda2b94395486e2c2f5adb82ae0",
+    "members": [
+      "amd_fidelityfx_upscaler_dx12.dll",
+      "notices/AMD-SDK-LICENSE.md",
+      "notices/PROVENANCE.md"
+    ],
+    "path": "build/reference-runtime/bc250-rc11"
+  },
+  "pipeline_cache": {
+    "url": "https://github.com/blackbearreloaded/ps5-fsr4/releases/download/build-inputs/pipeline-cache-ps5-6f0e6bcba425.bin",
+    "sha256": "6f0e6bcba4258153fbe725cca1b4ded19e5208a340f742ec8a54bf7879071a06",
+    "table_sha256": "8e6fd33f4c07d3958342ae59c869eac879b4a6898283a1f4341ece7e8da8af9e",
+    "cache_uuid": "e1679a70e0a6aa98b534c63bf21ac45d",
+    "path": "build/fsr4-runtime/pipeline-cache-ps5.bin"
+  }
+}
