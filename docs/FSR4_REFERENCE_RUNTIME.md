@@ -17,6 +17,13 @@ The reference runner uses Windows interop from WSL. It does not replace system D
 The exporter validates capture identity, workload and independent output.
 See tools/fsr4_reference_export.py and its tests.
 
+Replay restarts from the capture's first event for every exported dispatch,
+so export time grows with the square of the capture's length. For 2K and 4K
+captures, set `FSR4_EXPORT_DETAIL=frame0`. Frame 0 is then exported in full;
+later frames export only what the acceptance tests read: the first two
+dispatches' inputs and the output. A 4-frame 2560×1440 capture then exports in
+about 15 minutes.
+
 ## Native replay
 
 Set PS5_PAYLOAD_SDK and PS5_NATIVE_APP_TEMPLATE to local dependency paths.

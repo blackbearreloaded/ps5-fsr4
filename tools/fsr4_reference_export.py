@@ -99,7 +99,14 @@ def export_expectations(capture, variant, reference_run=None):
     return frames, expected, provenance
 
 
-def export(capture, warp, out, variant="upstream-rc11", reference_run=None):
+def export(capture, warp, out, variant="upstream-rc11", reference_run=None, detail="full"):
+    """Export every dispatch's bindings, replaying the capture before and at each one.
+
+    Replay restarts from the capture's first event, so the cost grows with the square of the
+    capture's length. `detail="frame0"` exports frame 0 that way. Later frames export only what
+    the acceptance tests read: the first two dispatches' inputs and the final output."""
+    if detail not in ("full", "frame0"):
+        raise ValueError("detail is full or frame0")
     frames, expected_output, provenance = export_expectations(capture, variant, reference_run)
     if hashlib.sha256(warp.read_bytes()).hexdigest() != WARP_SHA:
         raise ValueError("WARP runtime identity mismatch")
@@ -123,10 +130,18 @@ def export(capture, warp, out, variant="upstream-rc11", reference_run=None):
                      textures=[serialise(x) for x in controller.GetTextures()],
                      dispatches=[])
         textures = {str(x.resourceId) for x in controller.GetTextures()}
-        for action in controller.GetRootActions():
-            if action.children:
-                raise ValueError("Unexpected nested action tree in the pinned workload")
-            if not action.flags & rd.ActionFlags.Dispatch:
+        actions = controller.GetRootActions()
+        if any(action.children for action in actions):
+            raise ValueError("Unexpected nested action tree in the pinned workload")
+        actions = [action for action in actions if action.flags & rd.ActionFlags.Dispatch]
+        per_frame = len(actions) // frames
+        for index, action in enumerate(actions):
+            frame, position = divmod(index, per_frame)
+            if detail == "frame0" and frame and position not in (0, 1, per_frame - 1):
+                # Later frames keep the dispatch's shape; the pass's shader and bindings are frame 0's.
+                entry = dict(graph["dispatches"][position], srv=[], uav=[], cbv=[], samplers=[])
+                entry.update(fields(action, "eventId dispatchDimension"))
+                graph["dispatches"].append(entry)
                 continue
             controller.SetFrameEvent(action.eventId, True)
             pipe = controller.GetPipelineState()
@@ -172,7 +187,10 @@ def export(capture, warp, out, variant="upstream-rc11", reference_run=None):
                         written_resources.append((record, descriptor))
             # Capture the actual input to in-place passes, including any copies
             # between dispatches; the preceding dispatch snapshot is insufficient.
-            controller.SetFrameEvent(action.eventId - 1, True)
+            if detail == "frame0" and frame:
+                written_resources = []
+            else:
+                controller.SetFrameEvent(action.eventId - 1, True)
             for record, descriptor in written_resources:
                 if str(descriptor.resource) in textures:
                     sub = rd.Subresource()
@@ -185,7 +203,6 @@ def export(capture, warp, out, variant="upstream-rc11", reference_run=None):
             graph["dispatches"].append(entry)
             (out / "graph.json").write_text(json.dumps(graph, indent=2) + "\n")
         # 28 dispatches per frame, 29 when the frame ends with RCAS sharpening.
-        per_frame = len(graph["dispatches"]) // frames
         if per_frame not in (28, 29) or per_frame * frames != len(graph["dispatches"]):
             raise ValueError("Expected 28 or 29 dispatches for each of %d frames" % frames)
         matches = [x for x in graph["dispatches"][-1]["uav"]
@@ -197,7 +214,8 @@ def export(capture, warp, out, variant="upstream-rc11", reference_run=None):
                        final_output=matches[0]["descriptor"]["resource"],
                        final_output_sha256=expected_output, reference_variant=variant,
                        graph_sha256=hashlib.sha256((out / "graph.json").read_bytes()).hexdigest(),
-                       copies_and_barriers_exported=False, uav_before_state_exported=True, ps5_execution=False)
+                       copies_and_barriers_exported=False, uav_before_state_exported=True, ps5_execution=False,
+                       detail=detail)
         if provenance is not None:
             receipt["reference_run"] = provenance
         (out / "complete.json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -215,7 +233,7 @@ if __name__ == "__main__":
         export(Path(os.environ["FSR4_CAPTURE_FILE"]),
                Path(os.environ["FSR4_WARP_DLL"]), Path(os.environ["FSR4_CAPTURE_EXPORT"]),
                os.environ.get("FSR4_REFERENCE_VARIANT", "upstream-rc11"),
-               os.environ.get("FSR4_REFERENCE_RUN"))
+               os.environ.get("FSR4_REFERENCE_RUN"), os.environ.get("FSR4_EXPORT_DETAIL", "full"))
     except Exception:
         path = Path(os.environ["FSR4_CAPTURE_EXPORT"])
         if path.is_dir() and not (path / "complete.json").exists():
