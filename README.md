@@ -136,3 +136,5 @@ Built with the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk) by John
 
 Project code is GPL-3.0-or-later. See [LICENSE](LICENSE) and
 [LICENSING.md](LICENSING.md) for credits and the driver and AMD terms.
+
+This project was developed with AI assistance from OpenAI and/or Anthropic tools.
