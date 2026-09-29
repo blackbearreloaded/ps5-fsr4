@@ -1,6 +1,7 @@
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The runtime builder makes the model vote and the first-layer test constant and removes what they left dead."""
+"""The runtime builder makes the model vote and the first-layer test constant, removes what they left dead,
+and gives the band-1 Winograd passes the 32-lane waves they were written for."""
 import shutil
 import subprocess
 import sys
@@ -79,6 +80,53 @@ LAYERED = """
 """
 
 
+# The lane pairing of RC11's band-1 Winograd passes: the wave holding invocation 0 takes the even
+# pixels, lane l at pixel 2l, the other wave the odd ones.
+WINOGRAD = """
+               OpCapability Shader
+               OpCapability GroupNonUniform
+               OpCapability GroupNonUniformVote
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %local %lane_id %out
+               OpExecutionMode %main LocalSize 64 1 1
+               OpDecorate %local BuiltIn LocalInvocationId
+               OpDecorate %lane_id BuiltIn SubgroupLocalInvocationId
+               OpDecorate %block Block
+               OpMemberDecorate %block 0 Offset 0
+               OpDecorate %out DescriptorSet 0
+               OpDecorate %out Binding 0
+       %void = OpTypeVoid
+       %func = OpTypeFunction %void
+       %bool = OpTypeBool
+       %uint = OpTypeInt 32 0
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+   %subgroup = OpConstant %uint 3
+     %v3uint = OpTypeVector %uint 3
+    %ptr_v3u = OpTypePointer Input %v3uint
+   %ptr_uint = OpTypePointer Input %uint
+      %block = OpTypeStruct %uint
+    %ptr_blk = OpTypePointer StorageBuffer %block
+    %ptr_sbu = OpTypePointer StorageBuffer %uint
+      %local = OpVariable %ptr_v3u Input
+    %lane_id = OpVariable %ptr_uint Input
+        %out = OpVariable %ptr_blk StorageBuffer
+       %main = OpFunction %void None %func
+      %entry = OpLabel
+      %x_ptr = OpAccessChain %ptr_uint %local %uint_0
+          %x = OpLoad %uint %x_ptr
+       %lane = OpLoad %uint %lane_id
+      %first = OpIEqual %bool %x %uint_0
+       %wave = OpGroupNonUniformAny %bool %subgroup %first
+     %parity = OpSelect %uint %wave %uint_0 %uint_1
+      %twice = OpShiftLeftLogical %uint %lane %uint_1
+      %pixel = OpIAdd %uint %twice %parity
+        %dst = OpAccessChain %ptr_sbu %out %uint_0
+               OpStore %dst %pixel
+               OpReturn
+               OpFunctionEnd
+"""
+
 def tools_or_skip():
     tools = [shutil.which(name) for name in ("spirv-as", "spirv-val", "spirv-dis", "spirv-opt")]
     if not all(tools):
@@ -152,6 +200,26 @@ class ModelGuard(unittest.TestCase):
             self.assertNotIn("OpBranchConditional", text)
             self.assertNotIn("OpIAdd", text)
             self.assertNotIn("GlobalInvocationId", text)
+
+    def test_winograd_lanes_follow_local_ids(self):
+        tools, builder = tools_or_skip()
+        with tempfile.TemporaryDirectory() as tmp:
+            guard = assemble(tools, tmp, SOURCE).read_bytes()
+            self.assertEqual(builder.wave32_lanes(guard), guard)  # a vote over lanes of any size
+            spv = assemble(tools, tmp, WINOGRAD)
+            code = spv.read_bytes()
+            fixed = builder.wave32_lanes(code)
+            self.assertNotEqual(code, fixed)
+            self.assertEqual(builder.wave32_lanes(fixed), fixed)
+            spv.write_bytes(fixed)
+            subprocess.run([tools[1], "--target-env", "vulkan1.3", str(spv)], check=True)
+            text = disassemble(tools, spv)
+            self.assertRegex(text, r"= OpBitwiseAnd %uint %\w+ %uint_31")
+            self.assertRegex(text, r"= OpULessThan %bool %\w+ %uint_32")
+            builder.strip_dead_code(spv, False)
+            text = disassemble(tools, spv)
+            self.assertNotIn("GroupNonUniform", text)
+            self.assertNotIn("SubgroupLocalInvocationId", text)
 
 
 if __name__ == "__main__":

@@ -652,6 +652,69 @@ def remove_dead_code(code):
     return struct.pack(f"<{len(result)}I", *result)
 
 
+OP_ULESS_THAN, OP_BITWISE_AND, OP_GROUP_ANY, OP_LABEL = 176, 199, 335, 248
+BUILTIN_SUBGROUP_LOCAL_INVOCATION_ID = 41
+
+
+def wave32_lanes(code):
+    """Give the Winograd passes their 32-lane waves on any subgroup size.
+
+    RC11's band-1 Winograd passes (dispatches 3, 5, 9, 21 and 25 of standard band 1) are
+    declared WaveSize 32: in each 64-invocation workgroup the wave holding invocation 0
+    computes the even pixels and the other wave the odd ones, lane l at pixel 2l (+1). The lane
+    becomes local x & 31 and the vote any(local x == 0) becomes local x < 32, which is exactly
+    what a 32-lane wave computes; lavapipe's 8-lane and the PS5's wave64 subgroups otherwise
+    leave pixels unwritten. Returns the code unchanged without that vote (a model guard's
+    lane loop is size-independent).
+    """
+    words = list(struct.unpack(f"<{len(code) // 4}I", code))
+    if not any(op == OP_GROUP_ANY for _, op, _ in instructions(words)):
+        return code
+    builtins = {words[i + 1]: words[i + 3] for i, op, count in instructions(words)
+                if op == OP_DECORATE and count == 4 and words[i + 2] == DECORATION_BUILTIN}
+    lane_var = next((v for v, b in builtins.items() if b == BUILTIN_SUBGROUP_LOCAL_INVOCATION_ID), None)
+    if lane_var is None:
+        return code
+    local_var = next(v for v, b in builtins.items() if b == BUILTIN_LOCAL_INVOCATION_ID)
+    uint = next(words[i + 1] for i, op, _ in instructions(words)
+                if op == OP_TYPE_INT and words[i + 2] == 32 and words[i + 3] == 0)
+    constants = {words[i + 3]: words[i + 2] for i, op, count in instructions(words)
+                 if op == OP_CONSTANT and count == 4 and words[i + 1] == uint}
+    equals = {words[i + 2]: i for i, op, _ in instructions(words) if op == OP_IEQUAL}
+    chains = {words[i + 2] for i, op, count in instructions(words)
+              if op == OP_ACCESS_CHAIN and count == 5 and words[i + 3] == local_var and words[i + 4] == constants.get(0)}
+    local_x = [(i, words[i + 2]) for i, op, count in instructions(words) if op == OP_LOAD and words[i + 3] in chains]
+    lanes = [i for i, op, _ in instructions(words) if op == OP_LOAD and words[i + 3] == lane_var]
+    votes = [i for i, op, _ in instructions(words) if op == OP_GROUP_ANY]
+    if len(local_x) != 1 or len(lanes) != 1 or len(votes) != 1:
+        raise SystemExit(f"unexpected subgroup lane use: {len(local_x)} local x loads, {len(lanes)} lane loads, "
+                         f"{len(votes)} votes")
+    (x_at, x), lane_at, vote_at = local_x[0], lanes[0], votes[0]
+    predicate_at = equals.get(words[vote_at + 4])
+    operands = {words[predicate_at + 3], words[predicate_at + 4]} if predicate_at else set()
+    between = [op for i, op, _ in instructions(words) if x_at < i < max(lane_at, vote_at)]
+    if (operands != {x, constants.get(0)} or OP_LABEL in between
+            or not x_at < min(lane_at, vote_at)):
+        raise SystemExit("the subgroup lane is not the Winograd pairing of one 64-invocation workgroup")
+    first_function = next(i for i, op, _ in instructions(words) if op == OP_FUNCTION)
+    added = []
+    for value in (31, 32):
+        if value not in constants:
+            constants[value], words[3] = words[3], words[3] + 1
+            added += [(4 << 16) | OP_CONSTANT, uint, constants[value], value]
+    result = words[:5]
+    for i, op, count in instructions(words):
+        if i == first_function:
+            result += added
+        if i == lane_at:
+            result += [(5 << 16) | OP_BITWISE_AND, uint, words[i + 2], x, constants[31]]
+        elif i == vote_at:
+            result += [(5 << 16) | OP_ULESS_THAN, words[i + 1], words[i + 2], x, constants[32]]
+        else:
+            result += words[i:i + count]
+    return struct.pack(f"<{len(result)}I", *result)
+
+
 def capabilities(code):
     words = struct.unpack(f"<{len(code) // 4}I", code)
     found, i = set(), 5
@@ -760,7 +823,7 @@ def build_family(args, family, header, env):
             # vote must stay, and it picks the generic fallback where the weights differ.
             specialized = code if args.keep_model_guards or model_name != "standard" else specialize_model_guard(code)
             guard_removed = specialized != code
-            specialized = specialize_single_layer(specialized)
+            specialized = wave32_lanes(specialize_single_layer(specialized))
             if specialized != code:
                 spv = out / f"pass{index}.spv"
                 spv.write_bytes(specialized)
