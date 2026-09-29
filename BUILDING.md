@@ -51,9 +51,11 @@ dispatch's bindings, constant block and dispatch rule from
 `tools/fsr4_pass_abi.json`. `--families` lists the families to embed. Each
 family pairs a model, `standard` or `ultra-performance` (AMD's 3× mode), with a
 resolution band, `band0` (outputs up to 1920×1080) or `band1` (up to
-3840×2160). The default is `standard-band0,ultra-performance-band0`; the
-runtime picks the family per frame from the output size and the scaling ratio.
-Shaders the families share are embedded once. Its `--int8-kernels`
+3840×2160). The default is all four; the runtime picks the family per frame
+from the output size and the scaling ratio. Shaders the families share are
+embedded once. The band-1 families double `libps5_fsr4.a` (27 MB instead of
+13 MB); a title that never outputs more than 1920×1080 can leave them out.
+Its `--int8-kernels`
 option takes the dispatch indices whose converted shaders are replaced by
 packed-i16 kernels that `tools/fsr4_int8_kernels.py` generates from the local
 model. The default, 3, 5, 7, 9, 11, 21, 23 and 25 (network passes 1-5 and

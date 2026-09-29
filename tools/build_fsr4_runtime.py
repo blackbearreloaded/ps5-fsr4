@@ -882,10 +882,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dll", type=Path, default=ROOT / "build/reference-runtime/bc250-rc11/amd_fidelityfx_upscaler_dx12.dll",
                         help="The BC250 RC11 amd_fidelityfx_upscaler_dx12.dll the shaders and models are read from")
-    parser.add_argument("--families", default="standard-band0,ultra-performance-band0",
+    parser.add_argument("--families", default=",".join(fsr4_extract_dll.FAMILIES),
                         help="Comma-separated families to include: a model (standard or ultra-performance) and a "
-                             "resolution band (band0: outputs up to 1920x1080, band1: up to 3840x2160, not yet "
-                             "validated against a capture)")
+                             "resolution band (band0: outputs up to 1920x1080, band1: up to 3840x2160); default all")
     parser.add_argument("--out", type=Path, default=ROOT / "build/fsr4-runtime")
     parser.add_argument("--fp32-fma", choices=("explicit", "compiler-default"), default="explicit")
     parser.add_argument("--keep-model-guards", action="store_true",

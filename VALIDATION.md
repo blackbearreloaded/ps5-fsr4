@@ -43,6 +43,9 @@ run.
 | target | 1280×720 → 1920×1080 | static, at target resolution |
 | target-motion | 1280×720 → 1920×1080 | per-frame jitter, uniform motion vectors |
 | up | 640×360 → 1920×1080 | static, Ultra Performance (3×) model |
+| up-motion | 640×360 → 1920×1080 | Ultra Performance, per-frame jitter, uniform motion vectors |
+| k2 | 1280×720 → 2560×1440 | 2K output (the 3840×2160 shader band) |
+| odd | 1278×718 → 1918×1078 | output width and height not multiples of 8 |
 
 The probe's inputs are synthetic. Only the interactive demo exercises
 disocclusion, and it has no numeric reference.
@@ -61,3 +64,12 @@ Deploy the PS5 package to the locally configured console and collect its
 
 **Status.** Every scenario above is accepted on the PS5. Rerun the matrix after
 any change to the compiler, the driver or the runtime.
+
+**4K is not yet accepted.** In the static 1920×1080 → 3840×2160 capture, frames
+1–3 pass. Frame 0 misses the rule by 0.16 dB: the PS5 reaches 58.44 dB against
+WARP, lavapipe 59.60 dB. In 2K and 4K frames nearly all the remaining error, on
+the PS5 and on lavapipe alike, lies on the one-pixel borders of the prepass's
+16×16 tiles. There the prepass reprojects history with bilinear-filtered taps,
+and Vulkan leaves the filtering precision to the implementation. WARP's own
+reprojected history also differs from its input mainly on those borders. Inside
+the tiles the PS5 matches WARP to a mean squared error below 10⁻⁸.

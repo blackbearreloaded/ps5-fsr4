@@ -2,9 +2,9 @@
 
 > [!WARNING]
 > **Experimental.** FSR4 runs natively on the PS5 and passes its acceptance
-> against the WARP reference in every captured scenario, but this is not a
-> release. The SDK is built locally from reference exports of the FSR4
-> provider, and it needs a diagnostic profile of the Vulkan driver.
+> against the WARP reference in every captured scenario up to 2560×1440, but
+> this is not a release. The SDK is built locally from the BC250 RC11 build of
+> AMD's FSR4 provider, and it needs a diagnostic profile of the Vulkan driver.
 
 > [!IMPORTANT]
 > **Primary FSR4 porting credit: the BC250 FSR4 project.**
@@ -28,9 +28,12 @@ This project is independent of the upstream driver project.
   2.7 ms per frame. AMD's converted shaders alone take 3.26 ms, against
   3.93 ms on a BC250; generated INT8 kernels run the network, including the
   postpass's learned head, faster and produce the same bytes.
-- Every captured scenario is accepted: static, motion, camera cut, SDR,
-  dynamic resolution, sharpening, several output sizes, the 1080p target and
-  AMD's Ultra Performance model for 3× upscaling
+- Outputs up to 3840×2160: in the headless benchmark 1280×720 → 2560×1440
+  takes 5.5 ms and 1920×1080 → 3840×2160 12.2 ms (3.5 ms at 1080p).
+- Every captured scenario up to 2560×1440 is accepted: static, motion, camera
+  cut, SDR, dynamic resolution, sharpening, several output sizes, the 1080p
+  and 1440p targets and AMD's Ultra Performance model for 3× upscaling. At
+  4K, one frame of four misses the rule by 0.16 dB
   ([validation](VALIDATION.md#fsr4-acceptance)).
 - An interactive demo renders a scene, upscales it and presents it at 60 fps.
 - `tools/build_fsr4_sdk.py` stages the SDK: `libps5_fsr4.a`, its header,
