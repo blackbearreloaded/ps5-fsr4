@@ -45,13 +45,15 @@ A pipeline cache is only valid for the `libps5vk.a` build that saved it; see
 [the SDK guide](docs/FSR4_SDK.md).
 
 The pass tables come from `tools/build_fsr4_runtime.py`. It copies the shaders
-and the INT8 model of one family out of the DLL (`tools/fsr4_extract_dll.py`,
-which reads the file and verifies every copy against `tools/fsr4_dll_map.json`)
-and takes each dispatch's bindings, constant block and dispatch rule from
-`tools/fsr4_pass_abi.json`. `--family` picks the model, `standard` or
-`ultra-performance` (AMD's 3× mode), and the resolution band, `band0` (outputs
-up to 1920×1080) or `band1` (up to 3840×2160); the runtime so far runs the
-default, `standard-band0`. Its `--int8-kernels`
+and INT8 models out of the DLL (`tools/fsr4_extract_dll.py`, which reads the
+file and verifies every copy against `tools/fsr4_dll_map.json`) and takes each
+dispatch's bindings, constant block and dispatch rule from
+`tools/fsr4_pass_abi.json`. `--families` lists the families to embed. Each
+family pairs a model, `standard` or `ultra-performance` (AMD's 3× mode), with a
+resolution band, `band0` (outputs up to 1920×1080) or `band1` (up to
+3840×2160). The default is `standard-band0,ultra-performance-band0`; the
+runtime picks the family per frame from the output size and the scaling ratio.
+Shaders the families share are embedded once. Its `--int8-kernels`
 option takes the dispatch indices whose converted shaders are replaced by
 packed-i16 kernels that `tools/fsr4_int8_kernels.py` generates from the local
 model. The default, 3, 5, 7, 9, 11, 21, 23 and 25 (network passes 1-5 and

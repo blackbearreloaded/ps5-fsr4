@@ -58,8 +58,8 @@ enum fsr4_groups {
     FSR4_GROUPS_NONE          /* not dispatched: a pass whose work the generated kernels made dead */
 };
 
-/* Generated tables define FSR4_HAS_RCAS and fsr4_rcas_pass when the sharpening
- * pass was captured; it runs after the postpass as pipeline FSR4_PASS_COUNT. */
+/* Generated tables define fsr4_families[FSR4_FAMILY_COUNT]: one pass table per model and
+ * resolution band. The sharpening pass runs after the postpass as pipeline FSR4_PASS_COUNT. */
 
 struct fsr4_binding {
     uint8_t set, binding, descriptor, role;
@@ -76,6 +76,18 @@ struct fsr4_pass_info {
     uint16_t limit_width;     /* PADDING: allocated tensor width + 1 compiled into the shader;
                                  NETWORK: output-channel banks (workgroup z) when nonzero */
     uint16_t limit_height;    /* PADDING: allocated tensor height + 1 */
+};
+
+/* The passes of one AMD model at one resolution band. */
+struct fsr4_family {
+    const struct fsr4_pass_info *passes;    /* FSR4_PASS_COUNT dispatches */
+    const struct fsr4_pass_info *rcas;
+    const uint32_t *weights;                /* the model, then generated kernels' weight tables */
+    uint32_t weights_bytes;
+    uint32_t wave64_passes;                 /* dispatches that run as wave64 where offered */
+    uint32_t scratch_bytes;
+    uint8_t band;                           /* 0: outputs up to 1920x1080, 1: up to 3840x2160 */
+    uint8_t ultra_performance;              /* AMD mode 5 model, for 3x upscaling */
 };
 
 #endif

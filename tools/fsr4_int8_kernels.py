@@ -470,16 +470,18 @@ PASSES = {
 }
 # The postpass reads its latent at the RA position of its H pixel (see route_postpass_latent).
 POSTHEAD, POSTPASS = 26, 27
-# Ultra Performance (AMD mode 5) runs the same graph and model layout with its own weights;
-# its internal requantizations match the standard model's, but these final residual and
-# projection rules differ, and so do the two shifts of the postpass head.
+# Ultra Performance (AMD mode 5) runs the same graph and model layout with its own weights
+# and these requantization rules where they differ from the standard model's (reproduced
+# exactly from a captured Ultra Performance frame).
 ULTRA_PERFORMANCE = {
     3: dict(residual=([7] * 16, [64] * 16)),
     5: dict(residual=([6] * 16, [64] * 16)),
     7: dict(shift=[7] * 16 + [8] * 16),
-    9: dict(residual=([8] * 16 + [9] * 16, [256] * 16 + [512] * 16)),
-    21: dict(residual=([8] * 32, [256] * 32)),
+    9: dict(spatial=(10752, 13056, 8), expand=(13184, 15232, 7),
+            residual=([8] * 16 + [9] * 16, [256] * 16 + [512] * 16)),
+    21: dict(spatial=(107008, 109312, 7), expand=(109440, 111488, 8), residual=([8] * 32, [256] * 32)),
     23: dict(residual=([8] * 32, [256] * 32), up=(120832, 122880, 8, 256)),
+    25: dict(spatial=(123008, 125312, 8), expand=(125440, 125952, 7)),
     26: dict(spatial=(126720, 129024, 7), expand=(129152, 129664, 8)),
 }
 MODELS = ("standard", "ultra-performance")

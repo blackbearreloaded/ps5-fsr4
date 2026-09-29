@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Build the headless native FSR4 benchmark (PPSA88900) against the staged ps5_fsr4 SDK.
 
-It times 720p-to-1080p upscaling from submission to fence, with a per-pass
-profile, and needs neither a display nor a capture. Stage the SDK first with
-make driver-sdk and tools/build_fsr4_sdk.py.
+It times upscaling (720p to 1080p unless --render-size and --output-size say
+otherwise) from submission to fence, with a per-pass profile, and needs neither a
+display nor a capture. Stage the SDK first with make driver-sdk and
+tools/build_fsr4_sdk.py.
 """
 import argparse
 import json
@@ -23,13 +24,20 @@ def main():
     parser.add_argument("--pipeline-cache", type=Path, default=DIST_SDK / "share/ps5fsr4/pipeline-cache-ps5.bin",
                         help="Pipeline cache data from an earlier run on this driver")
     parser.add_argument("--out", type=Path, default=ROOT / "build/fsr4-bench")
+    parser.add_argument("--render-size", type=int, nargs=2, metavar=("WIDTH", "HEIGHT"), default=[1280, 720])
+    parser.add_argument("--output-size", type=int, nargs=2, metavar=("WIDTH", "HEIGHT"), default=[1920, 1080])
     args = parser.parse_args()
+    if any(r > o or r < 16 for r, o in zip(args.render_size, args.output_size)):
+        parser.error("render sizes must lie between 16 and the output size")
     library = DIST_SDK / "lib/libps5_fsr4.a"
     if not library.is_file():
         raise SystemExit(f"{library} is missing; run tools/build_fsr4_sdk.py")
     out = args.out.resolve()
     assets = out / "PPSA88900/assets"
     assets.mkdir(parents=True, exist_ok=True)
+    (out / "fsr4_bench_config.h").write_text(
+        "#define FSR4_BENCH_RENDER_W %du\n#define FSR4_BENCH_RENDER_H %du\n"
+        "#define FSR4_BENCH_OUTPUT_W %du\n#define FSR4_BENCH_OUTPUT_H %du\n" % (*args.render_size, *args.output_size))
     cache = assets / "pipeline-cache.bin"
     if args.pipeline_cache and args.pipeline_cache.is_file():
         cache.write_bytes(args.pipeline_cache.read_bytes())

@@ -29,7 +29,8 @@ This project is independent of the upstream driver project.
   3.93 ms on a BC250; generated INT8 kernels run the network, including the
   postpass's learned head, faster and produce the same bytes.
 - Every captured scenario is accepted: static, motion, camera cut, SDR,
-  dynamic resolution, sharpening, several output sizes and the 1080p target
+  dynamic resolution, sharpening, several output sizes, the 1080p target and
+  AMD's Ultra Performance model for 3× upscaling
   ([validation](VALIDATION.md#fsr4-acceptance)).
 - An interactive demo renders a scene, upscales it and presents it at 60 fps.
 - `tools/build_fsr4_sdk.py` stages the SDK: `libps5_fsr4.a`, its header,

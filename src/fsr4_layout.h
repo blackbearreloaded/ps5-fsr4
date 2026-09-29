@@ -15,18 +15,18 @@
 #include "fsr4_tables.h"
 
 #define FSR4_TENSORS 17u
-/* The model-v07 shader family allocates its tensor pyramid for a 1920x1080
- * output: padding shaders compile 961x541 extents and the scratch layout is
- * fixed. Larger outputs need a different provider shader family. */
-#define FSR4_MAX_OUTPUT_WIDTH 1920u
-#define FSR4_MAX_OUTPUT_HEIGHT 1080u
-#define FSR4_SCRATCH_BYTES 20880256u
+/* The model-v07 shaders come in resolution bands with fixed scratch layouts:
+ * band 0 for outputs up to 1920x1080, band 1 up to 3840x2160. */
+#define FSR4_BAND0_MAX_WIDTH 1920u
+#define FSR4_BAND0_MAX_HEIGHT 1080u
+#define FSR4_MAX_OUTPUT_WIDTH 3840u
+#define FSR4_MAX_OUTPUT_HEIGHT 2160u
 
 struct fsr4_layout {
     uint32_t max_render_width, max_render_height, output_width, output_height;
     uint32_t luma_width, luma_height;
     uint32_t tensor[FSR4_TENSORS][2];
-    uint64_t scratch_bytes;
+    uint32_t band;
 };
 
 /* CsTensorSizes rows as pyramid levels: the output rounded up to a multiple of
@@ -61,8 +61,17 @@ static inline int fsr4_layout_init(struct fsr4_layout *l, uint32_t max_render_wi
     /* Auto-exposure luma mip 5 of the half-resolution luminance. */
     l->luma_width = fsr4_div_up(max_render_width, 16);
     l->luma_height = fsr4_div_up(max_render_height, 16);
-    l->scratch_bytes = FSR4_SCRATCH_BYTES;
+    l->band = output_width > FSR4_BAND0_MAX_WIDTH || output_height > FSR4_BAND0_MAX_HEIGHT;
     return 0;
+}
+
+/* FidelityFX quality mode of an output-to-render width ratio: 0 native AA,
+ * 1 quality, 2 balanced, 3 performance, 5 ultra performance (4 is dynamic
+ * resolution, which the context flag selects). */
+static inline uint32_t fsr4_mode(uint32_t output_width, uint32_t render_width)
+{
+    const float ratio = (float)output_width / (float)render_width;
+    return ratio >= 2.99f ? 5u : ratio >= 1.99f ? 3u : ratio >= 1.6900001f ? 2u : ratio >= 1.5f ? 1u : 0u;
 }
 
 static inline int fsr4_layout_supports_render(const struct fsr4_layout *l, uint32_t width, uint32_t height)

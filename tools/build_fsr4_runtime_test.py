@@ -23,7 +23,8 @@ from build_fsr4_runtime import frame_length, roles  # noqa: E402
 SOURCES = [ROOT / "src/ps5_fsr4.c"]
 INCLUDES = [ROOT / "include", ROOT / "src"]
 # Dispatch parameters of the pinned reference probe (references/bc250-fsr4-fork/dll/probe/provider_probe.c).
-FLAGS = {"sdr": "PS5FSR4_FLAG_AUTO_EXPOSURE"}
+FLAGS = {"sdr": "PS5FSR4_FLAG_AUTO_EXPOSURE",  # the reference probe's context flags per scenario
+         "resize": "PS5FSR4_FLAG_HIGH_DYNAMIC_RANGE|PS5FSR4_FLAG_AUTO_EXPOSURE|PS5FSR4_FLAG_DYNAMIC_RESOLUTION"}
 SHARPNESS = {"rcas": 0.4}  # enableSharpening with this sharpness
 
 

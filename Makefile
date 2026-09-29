@@ -54,7 +54,7 @@ fsr4-dxil-converter:
 		-Wl,-rpath,'$$ORIGIN/dxil-spirv' -o build/fsr4_dxil_to_spirv
 	build/fsr4_dxil_to_spirv --self-test
 
-# Pass tables from the local reference exports, then dist-sdk: the driver SDK plus libps5_fsr4.a.
+# Pass tables from the BC250 RC11 DLL, then dist-sdk: the driver SDK plus libps5_fsr4.a.
 # The driver SDK is restaged first because the driver's own tests restage it without the profile.
 runtime: fsr4-dxil-converter
 	$(PYTHON) tools/build_fsr4_runtime.py

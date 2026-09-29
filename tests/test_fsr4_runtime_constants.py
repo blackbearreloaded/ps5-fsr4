@@ -10,6 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from fsr4_paths import VULKAN_HEADERS  # noqa: E402
+from fsr4_int8_kernels import LAYOUTS  # noqa: E402
 EXPORTS = ROOT / "build/reference-runtime"
 MANIFEST = ROOT / "build/fsr4-runtime/manifest.json"
 VULKAN = VULKAN_HEADERS
@@ -46,6 +47,8 @@ class RuntimeConstants(unittest.TestCase):
         cls.lib.fsr4_test_encode.argtypes = [u, u, u, u, u, u, f, f, f, f, f, ctypes.c_int, f,
                                              ctypes.c_int, f] + [ctypes.POINTER(u)] * 4
         cls.lib.fsr4_test_groups.argtypes = [u] * 10 + [ctypes.POINTER(u), ctypes.POINTER(u)]
+        cls.lib.fsr4_test_mode.argtypes, cls.lib.fsr4_test_mode.restype = [u, u], u
+        cls.lib.fsr4_test_band.argtypes = [u, u]
 
     @classmethod
     def tearDownClass(cls):
@@ -92,15 +95,21 @@ class RuntimeConstants(unittest.TestCase):
         if not MANIFEST.is_file():
             self.skipTest("generated runtime tables unavailable")
         manifest = json.loads(MANIFEST.read_text())
-        rules = [p["groups"] for p in manifest["passes"]]
+        _, graph, dispatches, (ow, oh), render = self.load(name)
+        # The family FidelityFX ran: the output's resolution band, Ultra Performance from a 2.99 ratio.
+        band = int(ow > 1920 or oh > 1080)
+        model = "ultra-performance" if self.lib.fsr4_test_mode(ow, render[0]) == 5 else "standard"
+        family = next((f for f in manifest["families"] if f["family"] == f"{model}-band{band}"), None)
+        if family is None:
+            self.skipTest(f"{model}-band{band} is not in the generated runtime tables")
+        rules = [p["groups"] for p in family["passes"]]
         # A generated postpass head runs per H pixel in place of the captured border clear, and
         # banked generated kernels add workgroup layers.
         replaced = ({26} & set(manifest.get("int8_kernels", []))) | {int(k) for k in manifest.get("int8_banks", {})}
-        _, graph, dispatches, (ow, oh), render = self.load(name)
         names = {r["resourceId"]: r["name"] for r in graph["resources"]}
         sizes = {names[t["resourceId"]]: (t["width"], t["height"]) for t in graph["textures"]}
         buffers = {names[b["resourceId"]]: b.get("length", b.get("byteSize")) for b in graph["buffers"]}
-        self.assertEqual(buffers["FSR4UPSCALER_ScratchBuffer"], 20880256)
+        self.assertEqual(buffers["FSR4UPSCALER_ScratchBuffer"], LAYOUTS[band]["scratch"])
         per = self.per_frame
         for frame in range(len(dispatches) // per):
             _, (rw, rh), _ = probe_parameters(scenario, frame, render)
@@ -143,6 +152,51 @@ class RuntimeConstants(unittest.TestCase):
     def test_sharpening(self):
         self.check_export("rcas", "rcas")
         self.check_geometry("rcas", "rcas")
+
+    def test_ultra_performance(self):
+        self.check_export("up", "static")
+        self.check_geometry("up", "static")
+
+    def test_ultra_performance_motion(self):
+        self.check_export("up-motion", "motion")
+
+    def test_odd_output(self):
+        self.check_export("odd", "static")
+        self.check_geometry("odd", "static")
+
+    def test_2k_output(self):
+        self.check_export("k2", "static")
+        self.check_geometry("k2", "static")
+
+    def test_2k_motion(self):
+        self.check_export("k2-motion", "motion")
+
+    def test_2k_quality(self):
+        self.check_export("k2-quality", "static")
+        self.check_geometry("k2-quality", "static")
+
+    def test_4k_output(self):
+        self.check_export("k4", "static")
+        self.check_geometry("k4", "static")
+
+    def test_4k_motion(self):
+        self.check_export("k4-motion", "motion")
+
+    def test_4k_ultra_performance(self):
+        self.check_export("k4-up", "static")
+        self.check_geometry("k4-up", "static")
+
+    def test_modes(self):
+        # FidelityFX's per-frame mode of the output-to-render width ratio; 5 is Ultra Performance.
+        for render, mode in ((1920, 0), (1281, 0), (1280, 1), (1137, 1), (1136, 2), (965, 2), (964, 3),
+                             (643, 3), (642, 5), (640, 5)):
+            self.assertEqual(self.lib.fsr4_test_mode(1920, render), mode, render)
+
+    def test_bands(self):
+        # Band 0 shaders cover outputs up to 1920x1080, band 1 up to 3840x2160.
+        for size, band in (((1920, 1080), 0), ((1921, 1080), 1), ((1920, 1081), 1), ((2560, 1440), 1),
+                           ((3840, 2160), 1), ((3841, 2160), -1), ((3840, 2161), -1)):
+            self.assertEqual(self.lib.fsr4_test_band(*size), band, size)
 
 
 if __name__ == "__main__":

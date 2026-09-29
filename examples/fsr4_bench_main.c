@@ -1,13 +1,15 @@
 /* Copyright (C) 2026 BlackBearReloaded
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Headless native FSR4 benchmark: 1280x720 inputs upscaled to 1920x1080 by
+ * Headless native FSR4 benchmark: inputs at the render size upscaled to the
+ * output size (tools/build_fsr4_bench.py; 1280x720 to 1920x1080 by default) by
  * ps5_fsr4 every frame, timed from submission to fence, with one profiled frame
  * that times each pass. No display, scene or present path: it only needs the
  * compute queue, and it writes nothing but a small log.
  */
 #include <ps5vk/ps5vk.h>
 #include <ps5fsr4/ps5_fsr4.h>
+#include "fsr4_bench_config.h"
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -21,7 +23,8 @@
 extern int sceKernelDebugOutText(int level, const char *text);
 extern int fsr4_native_heap_init(void);
 
-enum { RENDER_W = 1280, RENDER_H = 720, OUTPUT_W = 1920, OUTPUT_H = 1080 };
+enum { RENDER_W = FSR4_BENCH_RENDER_W, RENDER_H = FSR4_BENCH_RENDER_H,
+       OUTPUT_W = FSR4_BENCH_OUTPUT_W, OUTPUT_H = FSR4_BENCH_OUTPUT_H };
 enum { FRAMES = 1800, PROFILED = 200, WINDOW = 120, PROFILE_REPEAT = 8 };
 
 static FILE *log_file;

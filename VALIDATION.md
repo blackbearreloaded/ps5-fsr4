@@ -42,6 +42,7 @@ run.
 | size320 | 256×144 → 320×180 | output size |
 | target | 1280×720 → 1920×1080 | static, at target resolution |
 | target-motion | 1280×720 → 1920×1080 | per-frame jitter, uniform motion vectors |
+| up | 640×360 → 1920×1080 | static, Ultra Performance (3×) model |
 
 The probe's inputs are synthetic. Only the interactive demo exercises
 disocclusion, and it has no numeric reference.

@@ -13,19 +13,23 @@
 #include "fsr4_passes.h"
 #include "fsr4_layout.h"
 
-#ifdef FSR4_HAS_RCAS
 #define FSR4_PIPELINES (FSR4_PASS_COUNT + 1u)   /* the model passes, then RCAS */
-#else
-#define FSR4_PIPELINES FSR4_PASS_COUNT
-#endif
 #define FSR4_POSTPASS (FSR4_PASS_COUNT - 1u)
+#define FSR4_MODE_DYNAMIC_RESOLUTION 4u
+#define FSR4_MODE_ULTRA_PERFORMANCE 5u
 
-static const struct fsr4_pass_info *pass_info(uint32_t index)
+/* The generated family of a resolution band and model, or NULL when the tables lack it. */
+static const struct fsr4_family *find_family(uint32_t band, int ultra_performance)
 {
-#ifdef FSR4_HAS_RCAS
-    if (index == FSR4_PASS_COUNT) return &fsr4_rcas_pass;
-#endif
-    return &fsr4_passes[index];
+    for (uint32_t i = 0; i < FSR4_FAMILY_COUNT; ++i)
+        if (fsr4_families[i].band == band && fsr4_families[i].ultra_performance == ultra_performance)
+            return &fsr4_families[i];
+    return NULL;
+}
+
+static const struct fsr4_pass_info *family_pass(const struct fsr4_family *f, uint32_t index)
+{
+    return index == FSR4_PASS_COUNT ? f->rcas : &f->passes[index];
 }
 
 struct fsr4_image {
@@ -49,33 +53,36 @@ struct fsr4_pipeline {
     VkDescriptorSet sets[FSR4_DESCRIPTOR_SETS];
 };
 
+/* One family's pipelines and model data. A context has a slot for its band's
+ * standard model and one for its Ultra Performance model, created when first used. */
+struct fsr4_slot {
+    const struct fsr4_family *family;
+    struct fsr4_buffer weights;
+    struct fsr4_pipeline pipelines[FSR4_PIPELINES];
+    int ready;
+};
+
 struct ps5fsr4_context {
     ps5fsr4_context_desc desc;
     VkPhysicalDeviceMemoryProperties memory;
     struct fsr4_layout layout;
     struct fsr4_image images[FSR4_ROLE_COUNT];
-    struct fsr4_buffer weights, scratch, constants;
+    struct fsr4_buffer scratch, constants;
     VkDeviceSize constant_stride;
     VkSampler sampler;
     VkDescriptorPool pool;
-    struct fsr4_pipeline pipelines[FSR4_PIPELINES];
+    struct fsr4_slot slots[2];          /* standard, Ultra Performance */
+    int active;                         /* slot of the current frame */
+    uint32_t mode;                      /* FidelityFX mode of the current frame */
     int initialized;
     float previous_pre_exposure;
     int wave64;                         /* subgroupSizeControl offers 64 for compute */
 };
 
-/* Passes that run faster as wave64 on the PS5, chosen with the pass tables
- * (tools/build_fsr4_runtime.py --wave64). For the converted shaders alone the
- * best set was model passes 7 to 11: at 1280x720 -> 1920x1080 a frame took
- * 3.85 ms with every pass as wave32 or with every model pass and the
- * pre/postpass as wave64, 3.77 ms with the postpass also wave64, and 3.745 ms
- * with that set. Their only subgroup operations are the model-weight check's
- * all-true vote and lane index/count, so the size does not change results. */
-#ifdef FSR4_WAVE64_PASSES
-static const uint32_t fsr4_wave64_passes = FSR4_WAVE64_PASSES;
-#else
-static const uint32_t fsr4_wave64_passes = (1u << 15) | (1u << 17) | (1u << 19) | (1u << 21) | (1u << 23);
-#endif
+static const struct fsr4_pass_info *pass_info(const ps5fsr4_context *c, uint32_t index)
+{
+    return family_pass(c->slots[c->active].family, index);
+}
 
 static const VkAllocationCallbacks *allocator(const ps5fsr4_context *c)
 {
@@ -173,10 +180,10 @@ static VkDescriptorType descriptor_type(uint8_t kind)
     }
 }
 
-static ps5fsr4_result create_pipeline(ps5fsr4_context *c, uint32_t index)
+static ps5fsr4_result create_pipeline(ps5fsr4_context *c, struct fsr4_slot *slot, uint32_t index)
 {
-    const struct fsr4_pass_info *p = pass_info(index);
-    struct fsr4_pipeline *pl = &c->pipelines[index];
+    const struct fsr4_pass_info *p = family_pass(slot->family, index);
+    struct fsr4_pipeline *pl = &slot->pipelines[index];
     for (uint32_t set = 0; set < FSR4_DESCRIPTOR_SETS; ++set) {
         VkDescriptorSetLayoutBinding bindings[32];
         uint32_t count = 0;
@@ -208,7 +215,7 @@ static ps5fsr4_result create_pipeline(ps5fsr4_context *c, uint32_t index)
     const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo wave64 = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
         .requiredSubgroupSize = 64};
-    if (c->wave64 && (fsr4_wave64_passes & (1u << index)))
+    if (c->wave64 && (slot->family->wave64_passes & (1u << index)))
         info.stage.pNext = &wave64;
     info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -233,10 +240,11 @@ static int application_role(uint8_t role)
 }
 
 /* Bind every descriptor, taking application views from desc when given. */
-static void write_descriptors(ps5fsr4_context *c, uint32_t index, const ps5fsr4_dispatch_desc *desc)
+static void write_descriptors(ps5fsr4_context *c, struct fsr4_slot *slot, uint32_t index,
+                              const ps5fsr4_dispatch_desc *desc)
 {
-    const struct fsr4_pass_info *p = pass_info(index);
-    struct fsr4_pipeline *pl = &c->pipelines[index];
+    const struct fsr4_pass_info *p = family_pass(slot->family, index);
+    struct fsr4_pipeline *pl = &slot->pipelines[index];
     for (uint32_t i = 0; i < p->binding_count; ++i) {
         const struct fsr4_binding *b = &p->bindings[i];
         if (application_role(b->role) != (desc != NULL)) continue;
@@ -256,7 +264,7 @@ static void write_descriptors(ps5fsr4_context *c, uint32_t index, const ps5fsr4_
             image.imageView = index == FSR4_POSTPASS && desc->enable_sharpening ?
                 c->images[FSR4_ROLE_RCAS_INPUT].view : desc->output;
             break;
-        case FSR4_ROLE_WEIGHTS: buffer.buffer = c->weights.buffer; break;
+        case FSR4_ROLE_WEIGHTS: buffer.buffer = slot->weights.buffer; break;
         case FSR4_ROLE_SCRATCH: buffer.buffer = c->scratch.buffer; break;
         case FSR4_ROLE_CONSTANTS:
             buffer.buffer = c->constants.buffer;
@@ -281,7 +289,14 @@ static int valid_context_desc(const ps5fsr4_context_desc *d)
            d->max_render_width && d->max_render_height && d->output_width && d->output_height &&
            d->max_render_width <= d->output_width && d->max_render_height <= d->output_height &&
            !(d->flags & ~(uint32_t)(PS5FSR4_FLAG_HIGH_DYNAMIC_RANGE | PS5FSR4_FLAG_AUTO_EXPOSURE |
-                                    PS5FSR4_FLAG_SUBGROUP_SIZE_CONTROL));
+                                    PS5FSR4_FLAG_SUBGROUP_SIZE_CONTROL | PS5FSR4_FLAG_DYNAMIC_RESOLUTION));
+}
+
+/* The FidelityFX mode a context starts in: dynamic resolution, or that of its largest render size. */
+static uint32_t initial_mode(const ps5fsr4_context_desc *d)
+{
+    return d->flags & PS5FSR4_FLAG_DYNAMIC_RESOLUTION ? FSR4_MODE_DYNAMIC_RESOLUTION :
+           fsr4_mode(d->output_width, d->max_render_width);
 }
 
 ps5fsr4_result ps5fsr4_get_memory_requirements(const ps5fsr4_context_desc *desc,
@@ -292,12 +307,17 @@ ps5fsr4_result ps5fsr4_get_memory_requirements(const ps5fsr4_context_desc *desc,
     if (fsr4_layout_init(&layout, desc->max_render_width, desc->max_render_height,
                          desc->output_width, desc->output_height))
         return PS5FSR4_ERROR_UNSUPPORTED;
+    const uint32_t mode = initial_mode(desc);
+    const struct fsr4_family *standard = find_family(layout.band, 0), *ultra = find_family(layout.band, 1);
+    const struct fsr4_family *first = mode == FSR4_MODE_ULTRA_PERFORMANCE ? ultra : standard;
+    if (!first) return PS5FSR4_ERROR_UNSUPPORTED;
+    VkDeviceSize weights = first->weights_bytes;
+    /* Without dynamic resolution, a smaller render size can select the other model. */
+    if (first == standard && ultra && mode != FSR4_MODE_DYNAMIC_RESOLUTION)
+        weights += ultra->weights_bytes;
     VkDeviceSize output = (VkDeviceSize)desc->output_width * desc->output_height;
-    requirements->device_bytes = layout.scratch_bytes + FSR4_WEIGHTS_BYTES + output * (8 + 8 + 4) +
+    requirements->device_bytes = first->scratch_bytes + weights + output * (8 + 8 + 4 + 8) +
         (VkDeviceSize)layout.luma_width * layout.luma_height * 4 + 16;
-#ifdef FSR4_HAS_RCAS
-    requirements->device_bytes += output * 8;
-#endif
     requirements->host_visible_bytes = (VkDeviceSize)FSR4_PIPELINES * 512;
     return PS5FSR4_OK;
 }
@@ -306,12 +326,17 @@ void ps5fsr4_context_destroy(ps5fsr4_context *c)
 {
     if (!c) return;
     VkDevice d = c->desc.device;
-    for (uint32_t i = 0; i < FSR4_PIPELINES; ++i) {
-        struct fsr4_pipeline *pl = &c->pipelines[i];
-        if (pl->pipeline) vkDestroyPipeline(d, pl->pipeline, allocator(c));
-        if (pl->layout) vkDestroyPipelineLayout(d, pl->layout, allocator(c));
-        for (uint32_t s = 0; s < FSR4_DESCRIPTOR_SETS; ++s)
-            if (pl->set_layouts[s]) vkDestroyDescriptorSetLayout(d, pl->set_layouts[s], allocator(c));
+    for (uint32_t s = 0; s < 2; ++s) {
+        struct fsr4_slot *slot = &c->slots[s];
+        for (uint32_t i = 0; i < FSR4_PIPELINES; ++i) {
+            struct fsr4_pipeline *pl = &slot->pipelines[i];
+            if (pl->pipeline) vkDestroyPipeline(d, pl->pipeline, allocator(c));
+            if (pl->layout) vkDestroyPipelineLayout(d, pl->layout, allocator(c));
+            for (uint32_t k = 0; k < FSR4_DESCRIPTOR_SETS; ++k)
+                if (pl->set_layouts[k]) vkDestroyDescriptorSetLayout(d, pl->set_layouts[k], allocator(c));
+        }
+        if (slot->weights.buffer) vkDestroyBuffer(d, slot->weights.buffer, allocator(c));
+        if (slot->weights.memory) vkFreeMemory(d, slot->weights.memory, allocator(c));
     }
     if (c->pool) vkDestroyDescriptorPool(d, c->pool, allocator(c));
     if (c->sampler) vkDestroySampler(d, c->sampler, allocator(c));
@@ -320,12 +345,28 @@ void ps5fsr4_context_destroy(ps5fsr4_context *c)
         if (c->images[i].image) vkDestroyImage(d, c->images[i].image, allocator(c));
         if (c->images[i].memory) vkFreeMemory(d, c->images[i].memory, allocator(c));
     }
-    struct fsr4_buffer *buffers[] = {&c->weights, &c->scratch, &c->constants};
-    for (uint32_t i = 0; i < 3; ++i) {
+    struct fsr4_buffer *buffers[] = {&c->scratch, &c->constants};
+    for (uint32_t i = 0; i < 2; ++i) {
         if (buffers[i]->buffer) vkDestroyBuffer(d, buffers[i]->buffer, allocator(c));
         if (buffers[i]->memory) vkFreeMemory(d, buffers[i]->memory, allocator(c));
     }
     free(c);
+}
+
+/* Model data and pipelines of one family; passes that are never dispatched get none. */
+static ps5fsr4_result prepare_slot(ps5fsr4_context *c, struct fsr4_slot *slot)
+{
+    ps5fsr4_result r = create_buffer(c, &slot->weights, slot->family->weights_bytes,
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1);
+    if (r) return r;
+    memcpy(slot->weights.mapped, slot->family->weights, slot->family->weights_bytes);
+    for (uint32_t i = 0; i < FSR4_PIPELINES; ++i) {
+        if (family_pass(slot->family, i)->groups == FSR4_GROUPS_NONE) continue;
+        if ((r = create_pipeline(c, slot, i))) return r;
+        write_descriptors(c, slot, i, NULL);
+    }
+    slot->ready = 1;
+    return PS5FSR4_OK;
 }
 
 ps5fsr4_result ps5fsr4_context_create(const ps5fsr4_context_desc *desc, ps5fsr4_context **context)
@@ -338,6 +379,14 @@ ps5fsr4_result ps5fsr4_context_create(const ps5fsr4_context_desc *desc, ps5fsr4_
     ps5fsr4_result r = PS5FSR4_OK;
     if (fsr4_layout_init(&c->layout, desc->max_render_width, desc->max_render_height,
                          desc->output_width, desc->output_height)) {
+        r = PS5FSR4_ERROR_UNSUPPORTED;
+        goto fail;
+    }
+    c->mode = initial_mode(desc);
+    c->active = c->mode == FSR4_MODE_ULTRA_PERFORMANCE;
+    c->slots[0].family = find_family(c->layout.band, 0);
+    c->slots[1].family = find_family(c->layout.band, 1);
+    if (!c->slots[c->active].family) {
         r = PS5FSR4_ERROR_UNSUPPORTED;
         goto fail;
     }
@@ -356,16 +405,12 @@ ps5fsr4_result ps5fsr4_context_create(const ps5fsr4_context_desc *desc, ps5fsr4_
                           c->layout.luma_width, c->layout.luma_height, 0)) ||
         (r = create_image(c, &c->images[FSR4_ROLE_AUTO_EXPOSURE], VK_FORMAT_R32_SFLOAT, 2, 1, 1)) ||
         (r = create_image(c, &c->images[FSR4_ROLE_SPD_COUNTER], VK_FORMAT_R32_UINT, 1, 1, 0)) ||
-#ifdef FSR4_HAS_RCAS
         (r = create_image(c, &c->images[FSR4_ROLE_RCAS_INPUT], VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, 1)) ||
-#endif
-        (r = create_buffer(c, &c->weights, FSR4_WEIGHTS_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1)) ||
-        (r = create_buffer(c, &c->scratch, c->layout.scratch_bytes,
+        (r = create_buffer(c, &c->scratch, c->slots[c->active].family->scratch_bytes,
                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 0)) ||
         (r = create_buffer(c, &c->constants, c->constant_stride * FSR4_PIPELINES,
                            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 1)))
         goto fail;
-    memcpy(c->weights.mapped, fsr4_weights, FSR4_WEIGHTS_BYTES);
 
     VkSamplerCreateInfo sampler = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
@@ -377,16 +422,20 @@ ps5fsr4_result ps5fsr4_context_create(const ps5fsr4_context_desc *desc, ps5fsr4_
         r = PS5FSR4_ERROR_VULKAN;
         goto fail;
     }
+    /* Descriptors for both of the band's families. */
     uint32_t counts[5] = {0};
-    for (uint32_t i = 0; i < FSR4_PIPELINES; ++i)
-        for (uint32_t j = 0; j < pass_info(i)->binding_count; ++j)
-            ++counts[pass_info(i)->bindings[j].descriptor];
+    for (uint32_t s = 0; s < 2; ++s)
+        for (uint32_t i = 0; c->slots[s].family && i < FSR4_PIPELINES; ++i) {
+            const struct fsr4_pass_info *p = family_pass(c->slots[s].family, i);
+            for (uint32_t j = 0; p->groups != FSR4_GROUPS_NONE && j < p->binding_count; ++j)
+                ++counts[p->bindings[j].descriptor];
+        }
     VkDescriptorPoolSize sizes[5];
     uint32_t size_count = 0;
     for (uint8_t k = 0; k < 5; ++k)
         if (counts[k]) sizes[size_count++] = (VkDescriptorPoolSize){descriptor_type(k), counts[k]};
     VkDescriptorPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = FSR4_PIPELINES * FSR4_DESCRIPTOR_SETS;
+    pool.maxSets = 2 * FSR4_PIPELINES * FSR4_DESCRIPTOR_SETS;
     pool.poolSizeCount = size_count;
     pool.pPoolSizes = sizes;
     if (vkCreateDescriptorPool(desc->device, &pool, allocator(c), &c->pool) != VK_SUCCESS) {
@@ -401,10 +450,13 @@ ps5fsr4_result ps5fsr4_context_create(const ps5fsr4_context_desc *desc, ps5fsr4_
         c->wave64 = (v13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
                     v13.minSubgroupSize <= 64 && v13.maxSubgroupSize >= 64;
     }
-    for (uint32_t i = 0; i < FSR4_PIPELINES; ++i) {
-        if ((r = create_pipeline(c, i))) goto fail;
-        write_descriptors(c, i, NULL);
-    }
+    if ((r = prepare_slot(c, &c->slots[c->active]))) goto fail;
+    /* Without dynamic resolution, a frame rendered at about a third of the output width selects the
+     * Ultra Performance model. Its pipelines are created now as well: a change of mode then never
+     * compiles mid-game, and a pipeline cache saved after creation covers both models. */
+    if (!c->active && c->mode != FSR4_MODE_DYNAMIC_RESOLUTION && c->slots[1].family &&
+        (r = prepare_slot(c, &c->slots[1])))
+        goto fail;
     *context = c;
     return PS5FSR4_OK;
 fail:
@@ -412,18 +464,17 @@ fail:
     return r;
 }
 
-static void write_constants(ps5fsr4_context *c, const ps5fsr4_dispatch_desc *d)
+static void write_constants(ps5fsr4_context *c, const ps5fsr4_dispatch_desc *d, int reset)
 {
     uint32_t spd[FSR4_CONSTANT_BLOCK_BYTES / 4], mlsr[FSR4_CONSTANT_BLOCK_BYTES / 4];
     uint32_t tensor[FSR4_CONSTANT_BLOCK_BYTES / 4], rcas[FSR4_CONSTANT_BLOCK_BYTES / 4];
     fsr4_spd_constants(&c->layout, d->render_width, d->render_height, spd);
     fsr4_rcas_constants(d->sharpness, d->pre_exposure, rcas);
-    int reset = d->reset || !c->initialized;
     fsr4_mlsr_constants(&c->layout, d, reset, reset ? 0.0f : c->previous_pre_exposure, mlsr);
     fsr4_tensor_constants(&c->layout, tensor);
     for (uint32_t i = 0; i < FSR4_PIPELINES; ++i) {
         const uint32_t *source = NULL;
-        switch (pass_info(i)->constants) {
+        switch (pass_info(c, i)->constants) {
         case FSR4_CONSTANTS_SPD: source = spd; break;
         case FSR4_CONSTANTS_MLSR: source = mlsr; break;
         case FSR4_CONSTANTS_TENSOR: source = tensor; break;
@@ -438,10 +489,7 @@ static void clear_state(ps5fsr4_context *c, VkCommandBuffer cmd)
 {
     static const uint8_t internal[] = {FSR4_ROLE_HISTORY, FSR4_ROLE_HISTORY_REPROJECTED, FSR4_ROLE_RECURRENT,
                                        FSR4_ROLE_LUMA_MIP5, FSR4_ROLE_AUTO_EXPOSURE, FSR4_ROLE_SPD_COUNTER,
-#ifdef FSR4_HAS_RCAS
-                                       FSR4_ROLE_RCAS_INPUT,
-#endif
-                                      };
+                                       FSR4_ROLE_RCAS_INPUT};
     VkImageMemoryBarrier barriers[sizeof(internal)];
     const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     for (uint32_t i = 0; i < sizeof(internal); ++i) {
@@ -486,6 +534,24 @@ ps5fsr4_result ps5fsr4_dispatch(ps5fsr4_context *c, const ps5fsr4_dispatch_desc 
     return ps5fsr4_dispatch_passes(c, d, 0, FSR4_PASS_COUNT);
 }
 
+static void record(ps5fsr4_context *c, const ps5fsr4_dispatch_desc *d, uint32_t index, int barrier)
+{
+    const VkMemoryBarrier between = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_SHADER_WRITE_BIT,
+                                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    const struct fsr4_pass_info *p = pass_info(c, index);
+    const struct fsr4_pipeline *pl = &c->slots[c->active].pipelines[index];
+    uint32_t groups[3];
+    fsr4_pass_groups(&c->layout, p->groups, p->tensor, p->limit_width, p->limit_height,
+                     d->render_width, d->render_height, groups);
+    if (barrier)
+        vkCmdPipelineBarrier(d->command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &between, 0, NULL, 0, NULL);
+    vkCmdBindPipeline(d->command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pl->pipeline);
+    vkCmdBindDescriptorSets(d->command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pl->layout, 0,
+                            FSR4_DESCRIPTOR_SETS, pl->sets, 0, NULL);
+    vkCmdDispatch(d->command_buffer, groups[0], groups[1], groups[2]);
+}
+
 ps5fsr4_result ps5fsr4_dispatch_passes(ps5fsr4_context *c, const ps5fsr4_dispatch_desc *d,
                                        uint32_t first_pass, uint32_t pass_count)
 {
@@ -498,50 +564,30 @@ ps5fsr4_result ps5fsr4_dispatch_passes(ps5fsr4_context *c, const ps5fsr4_dispatc
         !(d->pre_exposure > 0.0f) || !finite_float(d->jitter_x) || !finite_float(d->jitter_y) ||
         (d->enable_sharpening && !(d->sharpness >= 0.0f && d->sharpness <= 1.0f)))
         return PS5FSR4_ERROR_INVALID_ARGUMENT;
-#ifndef FSR4_HAS_RCAS
-    if (d->enable_sharpening) return PS5FSR4_ERROR_UNSUPPORTED;
-#endif
     if (fsr4_layout_supports_render(&c->layout, d->render_width, d->render_height))
         return PS5FSR4_ERROR_UNSUPPORTED;
-    VkCommandBuffer cmd = d->command_buffer;
-    if (first_pass == 0) {  /* a frame starts: constants and bindings for all of its passes */
-        write_constants(c, d);
+    if (first_pass == 0) {  /* a frame starts: its mode, constants and bindings for all of its passes */
+        /* As in FidelityFX, a context without dynamic resolution takes the mode of each frame's
+         * ratio: at 2.99 or more the Ultra Performance model runs, and a change of mode resets. */
+        const uint32_t mode = c->desc.flags & PS5FSR4_FLAG_DYNAMIC_RESOLUTION ? FSR4_MODE_DYNAMIC_RESOLUTION :
+                              fsr4_mode(c->desc.output_width, d->render_width);
+        struct fsr4_slot *slot = &c->slots[mode == FSR4_MODE_ULTRA_PERFORMANCE];
+        if (!slot->ready) return PS5FSR4_ERROR_UNSUPPORTED;  /* tables without that model */
+        const int reset = d->reset || !c->initialized || mode != c->mode;
+        c->active = (int)(slot - c->slots);
+        c->mode = mode;
+        write_constants(c, d, reset);
         for (uint32_t i = 0; i < FSR4_PIPELINES; ++i)
-            write_descriptors(c, i, d);
+            if (pass_info(c, i)->groups != FSR4_GROUPS_NONE)
+                write_descriptors(c, slot, i, d);
         if (!c->initialized)
-            clear_state(c, cmd);
+            clear_state(c, d->command_buffer);
     }
-    const VkMemoryBarrier between = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_SHADER_WRITE_BIT,
-                                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
-    for (uint32_t i = first_pass; i < end; ++i) {
-        uint32_t groups[3];
-        const struct fsr4_pass_info *p = &fsr4_passes[i];
-        if (p->groups == FSR4_GROUPS_NONE)  /* the generated kernels left this pass nothing to do */
-            continue;
-        fsr4_pass_groups(&c->layout, p->groups, p->tensor, p->limit_width, p->limit_height,
-                         d->render_width, d->render_height, groups);
-        if (i > first_pass)
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                 0, 1, &between, 0, NULL, 0, NULL);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->pipelines[i].pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->pipelines[i].layout, 0,
-                                FSR4_DESCRIPTOR_SETS, c->pipelines[i].sets, 0, NULL);
-        vkCmdDispatch(cmd, groups[0], groups[1], groups[2]);
-    }
-#ifdef FSR4_HAS_RCAS
-    if (end == FSR4_PASS_COUNT && d->enable_sharpening) {
-        uint32_t groups[3];
-        const struct fsr4_pass_info *p = pass_info(FSR4_PASS_COUNT);
-        fsr4_pass_groups(&c->layout, p->groups, p->tensor, p->limit_width, p->limit_height,
-                         d->render_width, d->render_height, groups);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             0, 1, &between, 0, NULL, 0, NULL);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->pipelines[FSR4_PASS_COUNT].pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->pipelines[FSR4_PASS_COUNT].layout, 0,
-                                FSR4_DESCRIPTOR_SETS, c->pipelines[FSR4_PASS_COUNT].sets, 0, NULL);
-        vkCmdDispatch(cmd, groups[0], groups[1], groups[2]);
-    }
-#endif
+    for (uint32_t i = first_pass; i < end; ++i)
+        if (pass_info(c, i)->groups != FSR4_GROUPS_NONE)  /* the generated kernels made some passes dead */
+            record(c, d, i, i > first_pass);
+    if (end == FSR4_PASS_COUNT && d->enable_sharpening)
+        record(c, d, FSR4_PASS_COUNT, 1);
     if (end == FSR4_PASS_COUNT) {
         c->initialized = 1;
         c->previous_pre_exposure = d->pre_exposure;

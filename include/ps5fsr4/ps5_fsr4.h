@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 #define PS5FSR4_VERSION_MAJOR 0
-#define PS5FSR4_VERSION_MINOR 2
+#define PS5FSR4_VERSION_MINOR 3
 #define PS5FSR4_VERSION_PATCH 0
 
 typedef enum ps5fsr4_result {
@@ -49,7 +49,13 @@ typedef enum ps5fsr4_flags {
     /* The device was created with the Vulkan 1.3 subgroupSizeControl feature.
      * Where it offers compute subgroups of 64, passes that run faster as
      * wave64 on the PS5 require that size; results are unchanged. */
-    PS5FSR4_FLAG_SUBGROUP_SIZE_CONTROL = 1u << 2
+    PS5FSR4_FLAG_SUBGROUP_SIZE_CONTROL = 1u << 2,
+    /* The render size changes from frame to frame (FidelityFX dynamic
+     * resolution): the standard model runs at every ratio and size changes
+     * keep history. Without it, as in FidelityFX, the output-to-render width
+     * ratio selects the mode each frame: 2.99 or more runs the Ultra
+     * Performance model, and a change of mode discards history. */
+    PS5FSR4_FLAG_DYNAMIC_RESOLUTION = 1u << 3
 } ps5fsr4_flags;
 
 typedef struct ps5fsr4_context ps5fsr4_context;

@@ -17,6 +17,17 @@ int fsr4_test_groups(uint32_t max_render_w, uint32_t max_render_h, uint32_t outp
     return 0;
 }
 
+uint32_t fsr4_test_mode(uint32_t output_w, uint32_t render_w)
+{
+    return fsr4_mode(output_w, render_w);
+}
+
+int fsr4_test_band(uint32_t output_w, uint32_t output_h)
+{
+    struct fsr4_layout layout;
+    return fsr4_layout_init(&layout, 16, 16, output_w, output_h) ? -1 : (int)layout.band;
+}
+
 int fsr4_test_encode(uint32_t max_render_w, uint32_t max_render_h,
                      uint32_t render_w, uint32_t render_h, uint32_t output_w, uint32_t output_h,
                      float jitter_x, float jitter_y, float mv_x, float mv_y, float pre_exposure,

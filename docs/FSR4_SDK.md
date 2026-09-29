@@ -23,9 +23,11 @@ the default generated network kernels, and 3.26 ms with AMD's converted shaders 
 
 ## Building
 
-The FSR4 shaders and model data come from local reference exports of the
-BC250 FSR4 provider. Create them as described in the
-[reference procedure](FSR4_REFERENCE_RUNTIME.md). They are never committed.
+The FSR4 shaders and models come from the BC250 RC11 build of AMD's
+`amd_fidelityfx_upscaler_dx12.dll`, placed at `build/reference-runtime/bc250-rc11/`;
+`tools/fsr4_extract_dll.py` verifies every copy against its recorded digest.
+Nothing from it is committed. The acceptance tests also need local reference
+exports, created as described in the [reference procedure](FSR4_REFERENCE_RUNTIME.md).
 The converter target needs the pinned dxil-spirv checkout (`DXIL_SPIRV_DIR`,
 default `../references/dxil-spirv`). The pass-table generator also needs the
 pinned DXC under `build/reference-runtime/dxc/`.
@@ -71,6 +73,15 @@ one by running the runtime test on the PS5 without a cache: it saves
 3. Load the optional pipeline cache into a `VkPipelineCache`. Then call
    `ps5fsr4_context_create` with the maximum render size, the output size and
    the flags.
+
+   The runtime holds AMD's standard model and its Ultra Performance model for
+   3× upscaling. As in FidelityFX, each frame's output-to-render width ratio
+   selects the mode: at 2.99 or more the Ultra Performance model runs, and a
+   change of mode discards history. Such a context creates the pipelines of
+   both models, so a change of mode never compiles during a frame. When the
+   render size changes from frame to frame, pass
+   `PS5FSR4_FLAG_DYNAMIC_RESOLUTION`: the standard model then runs at every
+   ratio and keeps history across size changes.
 4. Each frame:
    1. Render with the offset from `ps5fsr4_jitter_offset`.
    2. Add a barrier from the render writes to compute reads.
@@ -81,8 +92,8 @@ one by running the runtime test on the PS5 without a cache: it saves
    converts stored motion to render pixels. Set `enable_sharpening` and a
    `sharpness` in [0, 1] to run RCAS after reconstruction.
 5. Save the cache with `vkGetPipelineCacheData` if it was created empty.
-   Without a cache, the first context creation compiles the passes for about
-   77 s. With the shipped cache it takes about 0.1 s.
+   Without a cache, the first context creation compiles the passes of both
+   models for about 16 s. With the shipped cache it takes under 0.1 s.
 6. Link in this order:
    1. `libps5_fsr4.a`;
    2. `libps5vk.a`;
@@ -99,7 +110,7 @@ SDK with `tools/build_fsr4_demo.py`.
 ## Limits
 
 - Output up to 1920×1080. The render size may change per frame, up to the
-  context maximum.
+  context maximum (see `PS5FSR4_FLAG_DYNAMIC_RESOLUTION` above).
 - One dispatch in flight per context.
 - No OpenGL backend. FSR4 runs on Vulkan compute.
 
