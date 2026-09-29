@@ -11,12 +11,13 @@ tonemapped BGRA8 frames of the demo scene. For each shot this writes:
   <shot>/zoom_<mode>.png   3x nearest-neighbour zoom of its busiest part
   <shot>/strip.png         the crops side by side, labelled
   <shot>/zoom.png          the zooms side by side, labelled
-  <shot>/metrics.md        PSNR and SSIM of each 1080p image against the reference
+  <shot>/metrics.md        PSNR and SSIM of each output-size image against the reference
 
 and for the orbiting clip clip/clip.mp4 and clip/clip_zoom.mp4 (bilinear | FSR4 | native),
 plus hero.png (a 2x2 sheet of the shot where FSR4 gains most) and an index README.md.
 Metrics compare against the 64-sample supersampled render; SSIM is computed on luma with
-a 7x7 uniform window.
+a 7x7 uniform window. Captures at other output sizes go to subdirectories named after the
+size (such as 3840x2160/); the index of the default 1080p set links to them.
 """
 import argparse
 import re
@@ -28,10 +29,15 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-OUTPUT = (1920, 1080)
+NAMES = {(1920, 1080): "1080p", (2560, 1440): "1440p", (3840, 2160): "4K"}
+SIZE = re.compile(r"\d+x\d+")
 CROP = (480, 270)
 ZOOM_WINDOW, ZOOM = (240, 135), 3
 FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+
+
+def output_name(size):
+    return NAMES.get(tuple(size), f"{size[0]}×{size[1]}")
 
 
 def load_log(capture):
@@ -108,7 +114,7 @@ def labelled(images, labels, gap=6, bar=30):
     return sheet
 
 
-def build_shot(capture, sizes, shot, out):
+def build_shot(capture, sizes, shot, out, native):
     names = {"reference": f"{shot}-reference", "native": f"{shot}-native"}
     renders = sorted({m.group(1) for n in sizes for m in [re.match(rf"{shot}-(\d+x\d+)-fsr4$", n)] if m},
                      key=lambda r: -int(r.split("x")[0]))
@@ -133,7 +139,7 @@ def build_shot(capture, sizes, shot, out):
         order += [f"{r}-bilinear", f"{r}-fsr4"]
         captions += [f"Bilinear from {r.replace('x', '×')}", f"FSR4 from {r.replace('x', '×')}"]
     order += ["native", "reference"]
-    captions += ["Native 1080p (no AA)", "Reference (64× SSAA)"]
+    captions += [f"Native {native} (no AA)", "Reference (64× SSAA)"]
     crops, zooms = [], []
     for mode in order:
         crop = Image.fromarray(images[mode][top:top + CROP[1], left:left + CROP[0]])
@@ -167,13 +173,13 @@ def build_shot(capture, sizes, shot, out):
     return dict(renders=renders, order=order, captions=captions, metrics=metrics, zooms=dict(zip(order, zooms)))
 
 
-def build_hero(shot, result, frame_ms, out):
+def build_hero(shot, result, frame_ms, output, out):
     """A 2x2 sheet for the project README: bilinear and FSR4 from the lowest render size, then
-    native 1080p and the reference, each 3x zoomed and captioned with its PSNR."""
-    r = result["renders"][-1]
-    cells = [(f"{r}-bilinear", f"Bilinear {r.replace('x', '×')} → 1080p"),
-             (f"{r}-fsr4", f"FSR4 {r.replace('x', '×')} → 1080p"),
-             ("native", "Native 1080p, no AA"), ("reference", "Reference, 64× supersampled")]
+    the native render and the reference, each 3x zoomed and captioned with its PSNR."""
+    r, native = result["renders"][-1], output_name(output)
+    cells = [(f"{r}-bilinear", f"Bilinear {r.replace('x', '×')} → {native}"),
+             (f"{r}-fsr4", f"FSR4 {r.replace('x', '×')} → {native}"),
+             ("native", f"Native {native}, no AA"), ("reference", "Reference, 64× supersampled")]
     captions = []
     for mode, caption in cells:
         if mode in result["metrics"]:
@@ -181,7 +187,8 @@ def build_hero(shot, result, frame_ms, out):
         captions.append(caption)
     rows = [labelled([result["zooms"][cells[i][0]], result["zooms"][cells[i + 1][0]]], captions[i:i + 2], bar=34)
             for i in (0, 2)]
-    title = f"FSR4 on PS5: {r.replace('x', '×')} → 1920×1080 in {frame_ms} ms  ·  {shot}, {ZOOM}× zoom"
+    title = (f"FSR4 on PS5: {r.replace('x', '×')} → {output[0]}×{output[1]} in {frame_ms} ms  ·  {shot}, "
+             f"{ZOOM}× zoom")
     sheet = Image.new("RGB", (rows[0].width, rows[0].height * 2 + 44), (24, 24, 24))
     ImageDraw.Draw(sheet).text((8, 8), title, fill=(255, 255, 255), font=font(24))
     sheet.paste(rows[0], (0, 44))
@@ -223,18 +230,33 @@ def main():
     capture, out = args.capture.resolve(), args.out.resolve()
     sizes = load_log(capture)
     shots = sorted({m.group(1) for n in sizes for m in [re.match(r"(.+)-reference$", n)] if m})
+    output = sizes[f"{shots[0]}-reference"]
+    native = output_name(output)
+    lowest = min((m.group(1) for n in sizes for m in [re.match(rf"{shots[-1]}-(\d+x\d+)-fsr4$", n)] if m),
+                 key=lambda r: int(r.split("x")[0]))
     out.mkdir(parents=True, exist_ok=True)
-    index = ["# FSR4 on PS5: before and after", "",
+    converged = ("48 jittered frames" if output == (1920, 1080) else
+                 "48 jittered frames or a whole jitter cycle, whichever is longer")
+    index = ["# FSR4 on PS5: before and after" + ("" if output == (1920, 1080) else f" at {native}"), "",
              "Frames of the demo scene (`examples/fsr4_demo_scene.comp`) captured on the console by "
              "`examples/fsr4_compare_main.c`: a bilinear upscale of the render, the FSR4 output after the "
-             "static shot converged (48 jittered frames), a native 1080p render without anti-aliasing and a "
+             f"static shot converged ({converged}), a native {native} render without anti-aliasing and a "
              "64-sample supersampled reference. All are tonemapped like the demo. Metrics are against the "
              "reference (SSIM on luma, 7×7 window).", "",
              "> [!CAUTION]", "> GitHub scales and compresses images shown inside a page. For the real pixels, open "
-             "a file such as `overview/full/960x540-fsr4.png` and use Raw or Download.", ""]
+             f"a file such as `{shots[-1]}/full/{lowest}-fsr4.png` and use Raw or Download.", ""]
+    if SIZE.fullmatch(out.name):
+        index[2:2] = ["Other output sizes: [all comparisons](../README.md).", ""]
+    else:
+        pages = sorted((d for d in out.iterdir() if SIZE.fullmatch(d.name) and (d / "README.md").is_file()),
+                       key=lambda d: int(d.name.split("x")[0]))
+        if pages:
+            links = ", ".join(f"[{output_name(tuple(map(int, d.name.split('x'))))}]({d.name}/README.md)"
+                              for d in pages)
+            index[2:2] = [f"Other output sizes: {links}.", ""]
     results = {}
     for shot in shots:
-        result = results[shot] = build_shot(capture, sizes, shot, out)
+        result = results[shot] = build_shot(capture, sizes, shot, out, native)
         index += [f"## {shot}", "", f"![{shot} zoom]({shot}/zoom.png)", "", f"![{shot} crops]({shot}/strip.png)", "",
                   "| Image | PSNR (dB) | SSIM |", "| --- | ---: | ---: |"]
         for mode, caption in zip(result["order"][:-1], result["captions"][:-1]):
@@ -248,7 +270,7 @@ def main():
         return results[shot]["metrics"][f"{r}-fsr4"][0] - results[shot]["metrics"][f"{r}-bilinear"][0]
 
     hero = args.hero or max(results, key=gain)
-    build_hero(hero, results[hero], args.frame_ms, out)
+    build_hero(hero, results[hero], args.frame_ms, output, out)
     index[2:2] = ["![FSR4 before and after](hero.png)", ""]
     frames = build_clip(capture, sizes, out)
     if frames:

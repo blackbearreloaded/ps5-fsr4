@@ -2,6 +2,8 @@
 
 ![FSR4 before and after](hero.png)
 
+Other output sizes: [1440p](2560x1440/README.md), [4K](3840x2160/README.md).
+
 Frames of the demo scene (`examples/fsr4_demo_scene.comp`) captured on the console by `examples/fsr4_compare_main.c`: a bilinear upscale of the render, the FSR4 output after the static shot converged (48 jittered frames), a native 1080p render without anti-aliasing and a 64-sample supersampled reference. All are tonemapped like the demo. Metrics are against the reference (SSIM on luma, 7×7 window).
 
 > [!CAUTION]

@@ -7,9 +7,11 @@
  *   - the FSR4 output after the static shot has converged,
  *   - a native output-resolution render (no anti-aliasing),
  *   - a 64-sample (8x8 stratified) supersampled output-resolution reference,
- * at 1280x720 and 960x540 to 1920x1080; then a short orbiting clip (crops of
- * bilinear, FSR4 and native frames) for temporal stability. The host builds the
- * comparison images from these files with tools/build_fsr4_comparisons.py.
+ * for the render and output sizes tools/build_fsr4_compare.py configures
+ * (1280x720 and 960x540 to 1920x1080 by default); then, by default, a short
+ * orbiting clip (crops of bilinear, FSR4 and native frames) for temporal
+ * stability. The host builds the comparison images from these files with
+ * tools/build_fsr4_comparisons.py.
  */
 #include <ps5vk/ps5vk.h>
 #include <ps5fsr4/ps5_fsr4.h>
@@ -23,11 +25,12 @@
 #include <time.h>
 #include <unistd.h>
 #include "fsr4_compare_shaders.h"
+#include "fsr4_compare_config.h"
 
 extern int sceKernelDebugOutText(int level, const char *text);
 extern int fsr4_native_heap_init(void);
 
-enum { OUTPUT_W = 1920, OUTPUT_H = 1080, MAX_RENDER_W = 1280, MAX_RENDER_H = 720 };
+enum { OUTPUT_W = FSR4_COMPARE_OUTPUT_W, OUTPUT_H = FSR4_COMPARE_OUTPUT_H };
 enum { CONVERGE_FRAMES = 48, REFERENCE_GRID = 8 };
 enum { CLIP_WARMUP = 16, CLIP_FRAMES = 90 };
 
@@ -37,9 +40,11 @@ static const struct shot shots[] = {
     {"fence", {-1.9f, 0.18f, 12.0f, 2.0f}},
     {"horizon", {0.3f, 0.12f, 18.0f, 2.0f}},
 };
-static const uint32_t render_sizes[][2] = {{1280, 720}, {960, 540}};
-/* The clip orbits from the overview camera; its crop is the frame's central 640x360. */
-static const int32_t clip_rect[4] = {640, 360, 640, 360};
+static const uint32_t render_sizes[][2] = FSR4_COMPARE_RENDER_SIZES;
+enum { RENDER_SIZES = sizeof(render_sizes) / sizeof(render_sizes[0]) };
+static uint32_t max_render_w, max_render_h;
+/* The clip orbits from the overview camera; its crop is the frame's middle third in each direction. */
+static const int32_t clip_rect[4] = {OUTPUT_W / 3, OUTPUT_H / 3, OUTPUT_W / 3, OUTPUT_H / 3};
 
 static FILE *log_file;
 static void report(const char *format, ...)
@@ -333,7 +338,7 @@ static int capture_shot(const struct shot *s)
     if (reference_frame(s->camera)) return 1;
     snprintf(name, sizeof(name), "%s-reference", s->name);
     if (export_rect(4, full, 0, 0, name)) return 1;
-    for (unsigned r = 0; r < sizeof(render_sizes) / sizeof(render_sizes[0]); ++r) {
+    for (unsigned r = 0; r < RENDER_SIZES; ++r) {
         const uint32_t w = render_sizes[r][0], h = render_sizes[r][1];
         const int32_t input[4] = {0, 0, (int32_t)w, (int32_t)h};
         if (plain_frame(s->camera, s->camera, w, h)) return 1;
@@ -341,8 +346,11 @@ static int capture_shot(const struct shot *s)
         if (export_rect(3, input, w, h, name)) return 1;
         snprintf(name, sizeof(name), "%s-%ux%u-bilinear", s->name, w, h);
         if (export_rect(1, full, w, h, name)) return 1;
-        /* A static camera: FSR4 accumulates the jittered frames into a converged image. */
-        for (uint32_t f = 0; f < CONVERGE_FRAMES; ++f)
+        /* A static camera: FSR4 accumulates the jittered frames into a converged image, over at
+         * least one whole jitter cycle (72 phases at 3x). */
+        uint32_t frames = ps5fsr4_jitter_phase_count(w, OUTPUT_W);
+        if (frames < CONVERGE_FRAMES) frames = CONVERGE_FRAMES;
+        for (uint32_t f = 0; f < frames; ++f)
             if (fsr4_frame(s->camera, s->camera, f, w, h, f == 0)) return 1;
         snprintf(name, sizeof(name), "%s-%ux%u-fsr4", s->name, w, h);
         if (export_rect(0, full, w, h, name)) return 1;
@@ -406,9 +414,13 @@ static int run(void)
     vkGetDeviceQueue(device, 0, 0, &queue);
     vkGetPhysicalDeviceMemoryProperties(physical, &memory_properties);
 
-    if (create_image(&lo_color, VK_FORMAT_R16G16B16A16_SFLOAT, MAX_RENDER_W, MAX_RENDER_H) ||
-        create_image(&lo_depth, VK_FORMAT_R32_SFLOAT, MAX_RENDER_W, MAX_RENDER_H) ||
-        create_image(&lo_motion, VK_FORMAT_R32G32B32A32_SFLOAT, MAX_RENDER_W, MAX_RENDER_H) ||
+    for (unsigned r = 0; r < RENDER_SIZES; ++r) {
+        if (render_sizes[r][0] > max_render_w) max_render_w = render_sizes[r][0];
+        if (render_sizes[r][1] > max_render_h) max_render_h = render_sizes[r][1];
+    }
+    if (create_image(&lo_color, VK_FORMAT_R16G16B16A16_SFLOAT, max_render_w, max_render_h) ||
+        create_image(&lo_depth, VK_FORMAT_R32_SFLOAT, max_render_w, max_render_h) ||
+        create_image(&lo_motion, VK_FORMAT_R32G32B32A32_SFLOAT, max_render_w, max_render_h) ||
         create_image(&hi_color, VK_FORMAT_R16G16B16A16_SFLOAT, OUTPUT_W, OUTPUT_H) ||
         create_image(&hi_depth, VK_FORMAT_R32_SFLOAT, OUTPUT_W, OUTPUT_H) ||
         create_image(&hi_motion, VK_FORMAT_R32G32B32A32_SFLOAT, OUTPUT_W, OUTPUT_H) ||
@@ -470,7 +482,7 @@ static int run(void)
         .pBufferInfo = &sbi};
     vkUpdateDescriptorSets(device, 1, &sw, 0, NULL);
 
-    ps5fsr4_context_desc cd = {sizeof(cd), physical, device, MAX_RENDER_W, MAX_RENDER_H, OUTPUT_W, OUTPUT_H,
+    ps5fsr4_context_desc cd = {sizeof(cd), physical, device, max_render_w, max_render_h, OUTPUT_W, OUTPUT_H,
                                PS5FSR4_FLAG_HIGH_DYNAMIC_RANGE | PS5FSR4_FLAG_AUTO_EXPOSURE |
                                (offered.subgroupSizeControl ? PS5FSR4_FLAG_SUBGROUP_SIZE_CONTROL : 0u),
                                NULL, pipeline_cache};
@@ -507,7 +519,7 @@ static int run(void)
 
     for (unsigned s = 0; s < sizeof(shots) / sizeof(shots[0]); ++s)
         if (capture_shot(&shots[s])) return 1;
-    return capture_clip();
+    return FSR4_COMPARE_CLIP ? capture_clip() : 0;
 }
 
 int main(void)

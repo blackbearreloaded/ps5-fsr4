@@ -90,15 +90,19 @@ and write their own result files:
   [acceptance](VALIDATION.md#fsr4-acceptance);
 - the interactive demo (`tools/build_fsr4_demo.py`), built from the staged
   [FSR4 SDK](docs/FSR4_SDK.md);
-- the headless benchmark (`tools/build_fsr4_bench.py`), which times 720p to
-  1080p upscaling from submission to fence and profiles each pass, without a
-  display or a capture;
+- the headless benchmark (`tools/build_fsr4_bench.py`), which times upscaling
+  (720p to 1080p unless `--render-size` and `--output-size` say otherwise)
+  from submission to fence and profiles each pass, without a display or a
+  capture;
 - the comparison capture (`tools/build_fsr4_compare.py`), which renders fixed
   shots of the demo scene at 1280×720 and 960×540 and writes the bilinear
   upscale, the converged FSR4 output, a native 1080p render, a 64-sample
   supersampled reference and an orbiting clip; fetch its `fsr4-compare-*`
   files and run `tools/build_fsr4_comparisons.py` on them for crops, 3× zooms,
-  PSNR/SSIM against the reference and side-by-side videos;
+  PSNR/SSIM against the reference and side-by-side videos. For other sizes pass
+  `--output-size`, `--render-sizes` and `--no-clip` (the 1440p set used
+  `--output-size 2560 1440 --render-sizes 1706x960,1280x720 --no-clip`), and
+  build the page into `comparisons/<width>x<height>/`;
 - the replay and precision witnesses below.
 
 They need the driver SDK staged with the FSR4 profile (`make driver-sdk`).

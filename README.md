@@ -76,11 +76,19 @@ recorded in it.
 pixels it comes closer to a 64× supersampled reference (37.5 dB) than native 1080p rendering
 does (31.2 dB).*
 
+![Captured on a PS5: bilinear and FSR4 upscales of 1280×720 to 3840×2160, native 4K and a 64× supersampled reference, 3× zoom](comparisons/3840x2160/hero.png)
+
+*At 4K: FSR4's Ultra Performance model upscales 1280×720, a ninth of the pixels, to
+3840×2160 in 11.5 ms (headless benchmark). It comes closer to the reference (38.6 dB) than
+native 4K rendering does (34.0 dB).*
+
 > [!TIP]
 > **Every comparison is in [`comparisons/`](comparisons/README.md)**: three shots of the demo
-> scene at 1280×720 and 960×540 input, lossless full-size frames, 1:1 crops, 3× zooms,
-> PSNR/SSIM against the supersampled reference and an orbiting motion clip, all captured on
-> the console.
+> scene at [1080p](comparisons/README.md) (from 1280×720 and 960×540),
+> [1440p](comparisons/2560x1440/README.md) (from 1706×960 and 1280×720) and
+> [4K](comparisons/3840x2160/README.md) (from 1920×1080 and 1280×720), with lossless full-size
+> frames, 1:1 crops, 3× zooms, PSNR/SSIM against the supersampled reference and, at 1080p, an
+> orbiting motion clip, all captured on the console.
 
 ## Layout
 
@@ -91,7 +99,7 @@ does (31.2 dB).*
 | `tools/` | Shader converter, reference exports, runtime/SDK/app builders, acceptance |
 | `tests/` | Host tests |
 | `examples/` | Runtime test, interactive demo, comparison capture and replay witnesses |
-| `comparisons/` | Before/after captures of the demo scene, built by `tools/build_fsr4_comparisons.py` |
+| `comparisons/` | Before/after captures of the demo scene at 1080p, 1440p and 4K, built by `tools/build_fsr4_comparisons.py` |
 | `docs/` | SDK guide, reference procedure, research notes, performance charts |
 | `external/ps5-vulkan/` | The Vulkan driver (submodule) |
 

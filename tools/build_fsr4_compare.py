@@ -6,9 +6,10 @@
 It renders fixed shots of the demo scene and writes, per shot, the render-resolution
 frame, its bilinear upscale, the converged FSR4 output, a native output-resolution
 render and a supersampled reference, plus a short orbiting clip; see
-examples/fsr4_compare_main.c. tools/build_fsr4_comparisons.py turns the fetched files
-into comparison images. Stage the SDK first with make driver-sdk and
-tools/build_fsr4_sdk.py.
+examples/fsr4_compare_main.c. The default output is 1920x1080 from 1280x720 and 960x540;
+--output-size and --render-sizes choose others, and --no-clip skips the clip.
+tools/build_fsr4_comparisons.py turns the fetched files into comparison images. Stage the
+SDK first with make driver-sdk and tools/build_fsr4_sdk.py.
 """
 import argparse
 import json
@@ -33,12 +34,26 @@ def main():
     parser.add_argument("--pipeline-cache", type=Path, default=DIST_SDK / "share/ps5fsr4/pipeline-cache-ps5.bin",
                         help="Pipeline cache data from an earlier run on this driver")
     parser.add_argument("--out", type=Path, default=ROOT / "build/fsr4-compare")
+    parser.add_argument("--output-size", type=int, nargs=2, metavar=("WIDTH", "HEIGHT"), default=[1920, 1080])
+    parser.add_argument("--render-sizes", default="1280x720,960x540",
+                        help="Comma-separated render sizes, each upscaled to the output size")
+    parser.add_argument("--no-clip", action="store_true", help="Skip the orbiting clip")
     args = parser.parse_args()
+    renders = [tuple(map(int, size.split("x"))) for size in args.render_sizes.split(",") if size]
+    ow, oh = args.output_size
+    if (not renders or ow % 8 or ow > 3840 or oh > 2160 or
+            any(not 16 <= w <= ow or not 16 <= h <= oh for w, h in renders)):
+        parser.error("render sizes must lie between 16 and the output size, which is a multiple of 8 wide "
+                     "and at most 3840x2160")
     library = DIST_SDK / "lib/libps5_fsr4.a"
     if not library.is_file():
         raise SystemExit(f"{library} is missing; run tools/build_fsr4_sdk.py")
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
+    (out / "fsr4_compare_config.h").write_text(
+        f"#define FSR4_COMPARE_OUTPUT_W {ow}\n#define FSR4_COMPARE_OUTPUT_H {oh}\n"
+        "#define FSR4_COMPARE_RENDER_SIZES {" + ",".join(f"{{{w}, {h}}}" for w, h in renders) + "}\n"
+        f"#define FSR4_COMPARE_CLIP {0 if args.no_clip else 1}\n")
     header = ["#include <stdint.h>"]
     for name, source in SHADERS.items():
         spv = out / f"fsr4_compare_{name}.spv"
