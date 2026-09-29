@@ -137,7 +137,9 @@ one by running the runtime test on the PS5 without a cache: it saves
 `examples/fsr4_demo_main.c` is a complete interactive consumer.
 It renders a scene at 720p, upscales it, and shows FSR4, bilinear or a split
 view on the display, switchable with the controller. Build it from the staged
-SDK with `tools/build_fsr4_demo.py`.
+SDK with `tools/build_fsr4_demo.py`. The [showcase app](../examples/fsr4_showcase/README.md)
+goes further: it recreates the context for each output size and for dynamic
+resolution, changes the quality mode per frame and enables sharpening.
 
 ## Limits
 

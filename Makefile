@@ -15,7 +15,7 @@ DRIVER_PROFILE = PS5VK_SHADER_INT8_DIAGNOSTIC=1 PS5VK_SHADER_INT16_DIAGNOSTIC=1 
 	PS5VK_SUBGROUP_ALL_DIAGNOSTIC=1 PS5VK_EXTENDED_COMPUTE_DIAGNOSTIC=1
 VULKAN_CFLAGS = -I$(DRIVER)/third_party/vulkan-headers/include
 
-.PHONY: all driver driver-source driver-headers driver-deps driver-psbc driver-sdk fsr4-dxil-converter runtime sdk demo check
+.PHONY: all driver driver-source driver-headers driver-deps driver-psbc driver-sdk fsr4-dxil-converter runtime sdk demo showcase check
 all: sdk
 
 # Fetch the driver when it is missing: the pinned submodule in a git checkout,
@@ -62,6 +62,9 @@ sdk: driver runtime
 	$(PYTHON) tools/build_fsr4_sdk.py
 demo:
 	$(PYTHON) tools/build_fsr4_demo.py
+# PPSA99010; SHOWCASE_ARGS takes --release VERSION, --screenshots or --selftest.
+showcase:
+	$(PYTHON) tools/build_fsr4_showcase.py $(SHOWCASE_ARGS)
 
 # Compile captured FSR4 SPIR-V against the pinned PS5 compiler on the host.
 .PHONY: fsr4-compile-probe fsr4-family-inventory fsr4-provider-inventory fsr4-poststage-audit fsr4-initializers

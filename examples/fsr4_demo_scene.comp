@@ -8,8 +8,10 @@
 // vectors (previous minus current UV, excluding jitter) as FSR4 expects.
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D color_out;
+#ifndef SCENE_COLOR_ONLY  // the showcase's native reference renders color alone
 layout(set = 0, binding = 1, r32f) uniform writeonly image2D depth_out;
 layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D motion_out;
+#endif
 
 layout(push_constant) uniform Params {
     vec4 camera;       // yaw, pitch, distance, time
@@ -144,6 +146,8 @@ void main()
         motion = project(previous, cam.origin + dir * FAR, size) - project(cam, cam.origin + dir * FAR, size);
     }
     imageStore(color_out, pixel, vec4(color, 1.0));
+#ifndef SCENE_COLOR_ONLY
     imageStore(depth_out, pixel, vec4(depth));
     imageStore(motion_out, pixel, vec4(motion, 0.0, 0.0));
+#endif
 }

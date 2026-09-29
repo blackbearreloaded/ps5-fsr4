@@ -35,6 +35,9 @@ This project is independent of the upstream driver project.
   of four misses the rule by 0.16 dB
   ([validation](VALIDATION.md#fsr4-acceptance)).
 - An interactive demo renders a scene, upscales it and presents it at 60 fps.
+- The [showcase app](examples/fsr4_showcase/README.md) (PPSA99010) tours every
+  quality mode, 1080p, 1440p and 4K output, dynamic resolution and sharpening,
+  with split views against bilinear and native rendering and a paired magnifier.
 - `tools/build_fsr4_sdk.py` stages the SDK: `libps5_fsr4.a`, its header,
   notices and a warmed pipeline cache ([FSR4 SDK](docs/FSR4_SDK.md)).
 
@@ -99,7 +102,7 @@ native 4K rendering does (34.0 dB).*
 | `src/` | Runtime: context, dispatch, constants and pass tables |
 | `tools/` | Shader converter, reference exports, runtime/SDK/app builders, acceptance |
 | `tests/` | Host tests |
-| `examples/` | Runtime test, interactive demo, comparison capture and replay witnesses |
+| `examples/` | Runtime test, interactive demo, showcase app, comparison capture and replay witnesses |
 | `comparisons/` | Before/after captures of the demo scene at 1080p, 1440p and 4K, built by `tools/build_fsr4_comparisons.py` |
 | `docs/` | SDK guide, reference procedure, research notes, performance charts |
 | `external/ps5-vulkan/` | The Vulkan driver (submodule) |
