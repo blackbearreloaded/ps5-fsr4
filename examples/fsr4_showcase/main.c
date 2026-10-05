@@ -52,6 +52,7 @@ extern int scePadInit(void);
 extern int scePadOpen(int32_t user, int32_t type, int32_t index, const void *params);
 extern int scePadReadState(int32_t handle, void *data);
 extern int sceSystemServiceLoadExec(const char *path, char *const argv[]);
+extern int sceSystemServiceHideSplashScreen(void);
 extern int fsr4_native_heap_init(void);
 #define ASSET_ROOT "/app0/assets"
 #endif
@@ -1422,6 +1423,8 @@ static int run(void)
         if (submit(&compose_ms)) return 1;
         VkResult pr = ps5vkPresentFrame(surface, slot, (uint64_t)frame + 1);
         if (pr != VK_SUCCESS) { report("FSR4_SHOWCASE_ERROR present=%d\n", (int)pr); return 1; }
+        if (frame == 0)  /* the system keeps the launch picture up until the title lets go of it */
+            report("FSR4_SHOWCASE_SPLASH hidden=%08x\n", (unsigned)sceSystemServiceHideSplashScreen());
 #endif
         sum_present += now_ms() - present_start - compose_ms;
 
