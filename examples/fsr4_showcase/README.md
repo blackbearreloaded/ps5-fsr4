@@ -21,7 +21,7 @@ filtered: every render pixel is one sample, as in a game without anti-aliasing.
   bars, window mullions, pavement joints and zebra crossings.
 - **Text and a resolution chart** on billboards in an open square: a reading
   chart whose rows get smaller, a page of small print, neon signs, and a chart
-  with a star of 72 spokes and line pairs down to a few millimetres.
+  with a star of 72 spokes and line pairs from 16 cm down to a millimetre.
 - **Motion:** two tram lines, traffic with head and tail lights, the turning
   wheel and its gondolas, a blinking beacon. Each writes its own motion vectors.
 
