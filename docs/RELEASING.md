@@ -10,7 +10,7 @@ packages a release. A `v*` tag publishes that package as a GitHub pre-release.
 
 | Asset | Contents |
 | --- | --- |
-| `ps5-fsr4-showcase-VERSION-PPSA99010.zip` | The [showcase app](../examples/fsr4_showcase/README.md) folder, a README, `notices/` and `SHA256SUMS` |
+| `ps5-fsr4-showcase-VERSION-PPSA99011.zip` | The [showcase app](../examples/fsr4_showcase/README.md) folder, a README, `notices/` and `SHA256SUMS` |
 | `ps5-fsr4-sdk-VERSION.zip` | `dist-sdk`: `libps5_fsr4.a` and its header, the driver SDK, the pipeline cache, the [SDK guide](FSR4_SDK.md), `notices/` and `SHA256SUMS` |
 | `ps5-fsr4-VERSION-source.tar.gz` | Corresponding source of the GPL code: this repository without `comparisons/`, the Vulkan driver, ps5-agc-gears and the native app template at the built commits |
 | `SHA256SUMS` | SHA-256 of the three assets |
@@ -64,8 +64,9 @@ for more than a minute instead of about 0.1 s. To make a new one:
 
 1. Validate the commit on a PS5: build the showcase's self-test
    (`make showcase SHOWCASE_ARGS=--selftest`), run it, and check that it ends
-   with `FSR4_SHOWCASE_SELFTEST_DONE` and that every `FSR4_SHOWCASE_OUTPUT` line
-   shows a `setup_ms` of about 0.1 s, which means the pipeline cache is used.
+   with `FSR4_SHOWCASE_SELFTEST_DONE`, that every `FSR4_SHOWCASE_OUTPUT` line
+   shows a `setup_ms` of about 0.1 s, which means the pipeline cache is used,
+   and that the frames it saved look right.
 2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`.
 3. The workflow builds, tests and packages the tag, then publishes the
    pre-release with the notes `tools/package_fsr4_release.py` writes.

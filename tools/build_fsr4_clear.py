@@ -91,11 +91,12 @@ def buffer_chain(graph):
 
 def build_native_app(out, source_file, title_name, extra_sources=(), include_dirs=(), libraries=(),
                      defines=(), title_id="PPSA88900", content_id="UP9000-PPSA88900_00-FSR4CLEARTEST001",
-                     sce_sys=None):
+                     sce_sys=None, param_overrides=None):
     """Use the same native template, heap and public SDK for both witnesses.
 
     The package is out/<title_id>. Launch assets in sce_sys (icon0.png, pic0.dds,
     pic1.dds, snd0.at9) replace the template's generic ones where present.
+    param_overrides sets fields of param.json; a dictionary is merged into the one there.
     """
     foundation, sdk, compiler, builder, gears = native_inputs()
     stage_driver_sdk()
@@ -148,6 +149,8 @@ def build_native_app(out, source_file, title_name, extra_sources=(), include_dir
     param = json.loads((gears / "sce_sys/param.json").read_text())
     param.update(titleId=title_id, conceptId=title_id[4:], contentId=content_id)
     param["localizedParameters"]["en-US"]["titleName"] = title_name
+    for key, value in (param_overrides or {}).items():
+        param[key] = {**param.get(key, {}), **value} if isinstance(value, dict) else value
     (package / "sce_sys/param.json").write_text(json.dumps(param, indent=2) + "\n")
     shutil.copyfile(foundation / "runtime/libc.prx", package / "sce_module/libc.prx")
     # The shell refuses to launch a title (0x80940033) without the launch assets.

@@ -5,7 +5,7 @@
 
 After make sdk and make showcase SHOWCASE_ARGS="--release VERSION", this writes to --out:
 
-- ps5-fsr4-showcase-VERSION-PPSA99010.zip: the showcase app, from build/fsr4-showcase;
+- ps5-fsr4-showcase-VERSION-PPSA99011.zip: the showcase app, from build/fsr4-showcase;
 - ps5-fsr4-sdk-VERSION.zip: the staged SDK (dist-sdk) with its guide;
 - ps5-fsr4-VERSION-source.tar.gz: the corresponding source of the GPL code in both,
   this repository and the Vulkan driver at the built commits, with ps5-agc-gears and
@@ -88,7 +88,7 @@ def third_party():
 | ps5-native-app-boilerplate at `{PINS['app_template']['commit'][:12]}` (BlackBearReloaded) | app start-up code, `sce_module/libc.prx` | GPL-3.0-or-later |
 | PS5 Payload SDK v0.42 by John Törnblom (https://github.com/ps5-payload-dev/sdk) | C and C++ runtime | GPL-3.0-or-later; FreeBSD-derived parts BSD; LLVM runtimes Apache-2.0 WITH LLVM-exception |
 | Vulkan-Headers (The Khronos Group) | SDK headers | Apache-2.0 or MIT, `Vulkan-Headers-LICENSE.md` |
-| DejaVu Sans (showcase HUD text, rasterized) | the showcase's `eboot.bin` | Bitstream Vera, `DejaVu-LICENSE` |
+| DejaVu Sans (showcase HUD text and signs, rasterized) | the showcase's `eboot.bin` | Bitstream Vera, `DejaVu-LICENSE` |
 
 The GPL code's corresponding source is the release's `ps5-fsr4-*-source.tar.gz`.
 """
@@ -137,19 +137,21 @@ def showcase_readme(version):
     r = revisions()
     return f"""# PS5 FSR4 Showcase {version}
 
-A native PS5 app (title PPSA99010) that shows AMD's FSR 4 upscaler running on the PS5
-GPU through the ps5_fsr4 SDK: every quality mode, 1080p, 1440p and 4K output, dynamic
-resolution, sharpening, and side-by-side comparisons with a magnifier, in a guided tour.
+A native PS5 app (title PPSA99011) that shows AMD's FSR 4 upscaler running on the PS5
+GPU through the ps5_fsr4 SDK. It draws a city at dusk at a fraction of the output size
+and upscales it at 60 fps. A settings menu chooses every quality mode at 1080p, 1440p
+and 4K output, splits the screen against bilinear and native rendering with a magnifier,
+and measures the upscaler on your own console.
 
 ## Install
 
 1. Extract this archive.
-2. Upload the `PPSA99010` folder to `/data/homebrew/` on a PS5 running a homebrew
+2. Upload the `PPSA99011` folder to `/data/homebrew/` on a PS5 running a homebrew
    loader with ShadowMountPlus, for example over FTP.
 3. Once the title is registered, start **PS5 FSR4 Showcase** from the home screen.
 
-The app opens with a guided tour of about two minutes; any button takes over. Controls
-and measured performance:
+The app opens with a guided tour of about two and a half minutes; any button takes over
+and OPTIONS opens the settings. Controls and measured performance:
 https://github.com/{REPOSITORY}/blob/{r['commit']}/examples/fsr4_showcase/README.md
 
 ## About this build
@@ -228,7 +230,7 @@ def source_archive(path, version):
 def release_notes(version, assets):
     r = revisions()
     rows = {
-        f"ps5-fsr4-showcase-{version}-PPSA99010.zip": "The PS5 FSR4 Showcase app, ready to install (see its README)",
+        f"ps5-fsr4-showcase-{version}-PPSA99011.zip": "The PS5 FSR4 Showcase app, ready to install (see its README)",
         f"ps5-fsr4-sdk-{version}.zip": "The ps5_fsr4 SDK for native PS5 applications",
         f"ps5-fsr4-{version}-source.tar.gz": "Corresponding source: this repository with its Vulkan driver, "
                                              "ps5-agc-gears and the native app template",
@@ -242,10 +244,10 @@ def release_notes(version, assets):
 | --- | --- |
 {table}
 
-**Install the showcase:** extract the showcase zip, upload its `PPSA99010` folder to
+**Install the showcase:** extract the showcase zip, upload its `PPSA99011` folder to
 `/data/homebrew/` on a PS5 running a homebrew loader with ShadowMountPlus, and start
 **PS5 FSR4 Showcase** from the home screen once it is registered. It opens with a guided
-tour; [controls and performance](https://github.com/{REPOSITORY}/blob/{r['commit']}/examples/fsr4_showcase/README.md).
+tour and OPTIONS opens its settings; [controls and performance](https://github.com/{REPOSITORY}/blob/{r['commit']}/examples/fsr4_showcase/README.md).
 
 **Use the SDK:** see `FSR4_SDK.md` in the SDK zip.
 
@@ -265,7 +267,7 @@ def main():
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
-    showcase = ROOT / f"build/fsr4-showcase/ps5-fsr4-showcase-{args.version}-PPSA99010.zip"
+    showcase = ROOT / f"build/fsr4-showcase/ps5-fsr4-showcase-{args.version}-PPSA99011.zip"
     if not showcase.is_file():
         raise SystemExit(f"{showcase} is missing; run make showcase SHOWCASE_ARGS='--release {args.version}'")
     assets = [shutil.copyfile(showcase, out / showcase.name),

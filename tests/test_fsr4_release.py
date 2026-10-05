@@ -84,7 +84,7 @@ class Packaging(unittest.TestCase):
 
     def test_release_notes_name_every_asset(self):
         version = "1.2.3"
-        assets = [f"ps5-fsr4-showcase-{version}-PPSA99010.zip", f"ps5-fsr4-sdk-{version}.zip",
+        assets = [f"ps5-fsr4-showcase-{version}-PPSA99011.zip", f"ps5-fsr4-sdk-{version}.zip",
                   f"ps5-fsr4-{version}-source.tar.gz"]
         notes = release.release_notes(version, assets)
         for name in [*assets, "SHA256SUMS"]:

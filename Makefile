@@ -62,7 +62,7 @@ sdk: driver runtime
 	$(PYTHON) tools/build_fsr4_sdk.py
 demo:
 	$(PYTHON) tools/build_fsr4_demo.py
-# PPSA99010; SHOWCASE_ARGS takes --release VERSION, --screenshots or --selftest.
+# PPSA99011; SHOWCASE_ARGS takes --release VERSION, --selftest or --host.
 showcase:
 	$(PYTHON) tools/build_fsr4_showcase.py $(SHOWCASE_ARGS)
 # Pinned public inputs (tools/build_inputs.json) into build/; eval "$$(python3 tools/fetch_build_inputs.py --env)"

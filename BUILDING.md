@@ -35,7 +35,7 @@ the builds at them. GitHub Actions builds the same way
 make driver   # pinned driver dependencies, PSBC (PS5 and host), driver SDK with the FSR4 profile
 make sdk      # converter, pass tables, then dist-sdk: the driver SDK plus libps5_fsr4.a
 make demo     # PPSA88900 interactive demo against dist-sdk
-make showcase # PPSA99010 showcase app against dist-sdk
+make showcase # PPSA99011 showcase app against dist-sdk
 make check    # host tests
 ```
 
@@ -101,7 +101,7 @@ and write their own result files:
 - the interactive demo (`tools/build_fsr4_demo.py`), built from the staged
   [FSR4 SDK](docs/FSR4_SDK.md);
 - the [showcase app](examples/fsr4_showcase/README.md)
-  (`tools/build_fsr4_showcase.py`), packaged as its own title, PPSA99010;
+  (`tools/build_fsr4_showcase.py`), packaged as its own title, PPSA99011;
 - the headless benchmark (`tools/build_fsr4_bench.py`), which times upscaling
   (720p to 1080p unless `--render-size` and `--output-size` say otherwise)
   from submission to fence and profiles each pass, without a display or a

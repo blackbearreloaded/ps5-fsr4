@@ -37,9 +37,10 @@ This project is independent of the upstream driver project.
   of four misses the rule by 0.16 dB
   ([validation](VALIDATION.md#fsr4-acceptance)).
 - An interactive demo renders a scene, upscales it and presents it at 60 fps.
-- The [showcase app](examples/fsr4_showcase/README.md) (PPSA99010) tours every
-  quality mode, 1080p, 1440p and 4K output, dynamic resolution and sharpening,
-  with split views against bilinear and native rendering and a paired magnifier.
+- The [showcase app](examples/fsr4_showcase/README.md) (PPSA99011) draws a city
+  at dusk and upscales it at 60 fps. Its settings choose every quality mode at
+  1080p, 1440p and 4K output, with split views against bilinear and native
+  rendering, a paired magnifier and a benchmark of the upscaler.
 - GitHub Actions builds and tests everything from pinned public inputs on every
   push; a `v*` tag publishes a
   [pre-release](https://github.com/blackbearreloaded/ps5-fsr4/releases) with

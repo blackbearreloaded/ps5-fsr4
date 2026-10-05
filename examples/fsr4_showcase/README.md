@@ -1,102 +1,106 @@
 # PS5 FSR4 Showcase
 
-A native PS5 app, packaged as its own title (**PPSA99010**, *PS5 FSR4 Showcase*),
-that shows what the `ps5_fsr4` SDK does on the console. It renders the demo
-scene (`examples/fsr4_demo_scene.comp`), upscales it with FSR4 and presents it at
-1920×1080, with a guided tour, live timings and comparison views:
+A native PS5 app, packaged as its own title (**PPSA99011**, *PS5 FSR4 Showcase*),
+that shows what the `ps5_fsr4` SDK does on the console. It draws a city at dusk
+at a fraction of the output size, upscales it with FSR 4 and presents it at
+60 fps. A settings menu changes the render and output sizes, compares FSR 4
+with a bilinear upscale and with native rendering, and measures the upscaler on
+the console it runs on.
 
-- **Every quality mode:** Native AA (1×), Quality (1.5×), Balanced (1.7×),
-  Performance (2×) and Ultra Performance (3×), which runs AMD's dedicated
-  Ultra Performance model. The mode can change from one frame to the next.
-- **Three output sizes:** 1920×1080, 2560×1440 and 3840×2160. Larger outputs
-  are box-filtered to the 1080p display, so the whole frame is supersampled,
-  and the lens shows the output's own pixels. Changing the output recreates
-  the FSR4 context, which takes about 85 ms.
-- **Comparisons:** FSR4 alone, split against a bilinear upscale of the same
-  jittered frame or against a native render at output size without
-  anti-aliasing, or either reference alone.
-- **Lens:** a magnifier (2× to 8×). In a split view it becomes a pair of lenses
-  that show the same pixels from both sources side by side.
-- **Dynamic resolution:** a context created with
-  `PS5FSR4_FLAG_DYNAMIC_RESOLUTION`, whose render size sweeps between the
-  mode's size and half of it every four seconds while history is kept.
-- **RCAS sharpening** with adjustable strength.
-- **HUD:** mode, render and output sizes, FSR4 and scene times and the frame
-  rate. The CPU draws it and uploads only what changed.
+## The scene
 
-## Guided tour
+The city is built from what an upscaler finds hard, and nothing in it is
+filtered: every render pixel is one sample, as in a game without anti-aliasing.
 
-The app starts with a tour of ten chapters, about 110 seconds in all, and
-repeats it. Any button or stick takes over. The tour resumes after 45 seconds
-without input, or when OPTIONS is pressed.
+- **Thinner than a pixel:** tram wires 3 cm thick, strings of lights across the
+  streets, antennas, lamp posts, a chain-link fence around each park and the
+  leaves of its tree.
+- **A lattice tower** 144 m tall, made of girders, braces and posts, and a
+  **big wheel** with spokes, stays and lights.
+- **Fine regular patterns:** louvred facades, brick with mortar lines, balcony
+  bars, window mullions, pavement joints and zebra crossings.
+- **Text and a resolution chart** on billboards in an open square: a reading
+  chart whose rows get smaller, a page of small print, neon signs, and a chart
+  with a star of 72 spokes and line pairs down to a few millimetres.
+- **Motion:** two tram lines, traffic with head and tail lights, the turning
+  wheel and its gondolas, a blinking beacon. Each writes its own motion vectors.
 
-| # | Chapter | Configuration |
-| --- | --- | --- |
-| 1 | FSR 4 on PlayStation 5 | 1280×720 → 1920×1080 (Quality) |
-| 2 | FSR 4 against bilinear | Quality, split against bilinear, lens pair |
-| 3 | Every quality mode | Quality, Balanced, Performance and Ultra Performance in turn, split against bilinear |
-| 4 | Ultra Performance | 640×360 → 1920×1080, split against bilinear, lens pair |
-| 5 | Dynamic resolution | render size sweeping between 1280×720 and 640×360 |
-| 6 | RCAS sharpening | strength sweeping from 0 to 1, lens |
-| 7 | 1440p output | 1280×720 → 2560×1440 (Performance), lens on 1440p pixels |
-| 8 | 4K output | 1920×1080 → 3840×2160 (Performance), split against bilinear, lens pair on 4K pixels |
-| 9 | 4K from 720p | 1280×720 → 3840×2160 (Ultra Performance), split against bilinear, lens pair |
-| 10 | FSR 4 against native rendering | 960×540 → 1920×1080 against native 1080p without anti-aliasing, lens pair |
+`city.comp` casts one ray per pixel in a compute shader: across the street plan
+cell by cell, and against the landmarks. It writes linear HDR color, depth and
+motion vectors, which is all FSR 4 needs.
+
+## Settings
+
+OPTIONS opens the menu. The D-pad selects a row and changes its value.
+
+| Row | Values |
+| --- | --- |
+| Scenario | The six render and output sizes of the [performance table](../../README.md#performance), or *Custom* |
+| Output size | 1920×1080, 2560×1440, 3840×2160 |
+| Quality mode | Native AA (1×), Quality (1.5×), Balanced (1.7×), Performance (2×), Ultra Performance (3×, AMD's dedicated model) |
+| Compare | FSR 4; FSR 4 split against bilinear or against native rendering; bilinear; native |
+| Lens | Off, or 2× to 8×: a magnifier on the output's own pixels, paired in a split view |
+| RCAS sharpening | Off, or a strength of 0.1 to 1.0 |
+| Dynamic resolution | The render size sweeps between the mode's size and half of it; history is kept |
+| Camera | Cinematic (eight shots through the city) or free flight |
+| Animation | Running or paused |
+| On-screen display | Full, compact or off |
+| Benchmark this setting | Times FSR 4 at the current sizes |
+| Benchmark the six scenarios | Times all six and shows them beside the README's numbers |
+| Guided tour | Twelve chapters, about two and a half minutes |
+
+The display is 1920×1080. A larger output is box-filtered down to it, so the
+whole frame is supersampled, and the lens shows the output's own pixels.
+Changing the output size recreates the FSR4 context, which takes about 85 ms.
+A native view at 3840×2160 renders the scene a second time at that size.
 
 ## Controls
 
 | Input | Action |
 | --- | --- |
-| Left stick | Orbit the camera |
-| L2 / R2 | Camera distance |
-| Right stick | Move the lens, or the split when the lens is off |
-| Cross | Next view: FSR 4, against bilinear, against native, bilinear, native |
-| L1 / R1 | Quality mode (at 4K, Native AA is skipped: it would render at 4K) |
-| Circle | Next output size: 1080p, 1440p, 4K |
-| Square | Lens on or off; D-pad left and right change its zoom |
-| Triangle | Sharpening on or off; D-pad up and down change its strength |
-| L3 | Dynamic resolution on or off |
-| R3 | Pause the scene |
-| OPTIONS | Guided tour on or off |
-| Touch pad | Hide or show the HUD |
+| OPTIONS | Settings |
+| Cross | Next comparison |
+| Square | Lens on or off |
+| Triangle | Cinematic camera or free flight |
+| L1 / R1 | Previous or next scenario |
+| Touchpad | On-screen display: full, compact, off |
+| D-pad | Move the lens, or the divider of a split view |
+| Left stick | Free flight: move |
+| Right stick | Free flight: look |
+| L2 / R2 | Free flight: down and up |
+
+The app starts with the guided tour. Any button ends it, and it starts again
+after a minute without input.
 
 ## Performance on PS5
 
-Measured by the `--selftest` build in the FSR4 view (times from submission to
-fence, averaged per setting):
+The six scenarios, measured by the `--selftest` build on a PS5. *Benchmark* is
+what the app's own benchmark reports: the mean of 300 FSR 4 frames submitted
+back to back, each timed from submission to completion on the GPU. *In the app*
+is the same measurement at the 60 fps the app runs at.
 
-| Output | Mode | Render size | FSR4 (ms) | Scene (ms) | Frame rate |
-| --- | --- | --- | ---: | ---: | ---: |
-| 1920×1080 | Native AA | 1920×1080 | 2.75 | 4.6 | 60 |
-| 1920×1080 | Quality | 1280×720 | 2.66 | 2.4 | 60 |
-| 1920×1080 | Balanced | 1129×635 | 2.64 | 2.1 | 60 |
-| 1920×1080 | Performance | 960×540 | 2.63 | 1.7 | 60 |
-| 1920×1080 | Ultra Performance | 640×360 | 2.66 | 1.0 | 60 |
-| 2560×1440 | Native AA | 2560×1440 | 4.66 | 7.4 | 60 |
-| 2560×1440 | Quality | 1706×960 | 4.40 | 3.9 | 60 |
-| 2560×1440 | Balanced | 1505×847 | 4.37 | 3.1 | 60 |
-| 2560×1440 | Performance | 1280×720 | 4.35 | 2.4 | 60 |
-| 2560×1440 | Ultra Performance | 853×480 | 4.36 | 1.5 | 60 |
-| 3840×2160 | Quality | 2560×1440 | 10.40 | 7.4 | 30 |
-| 3840×2160 | Balanced | 2258×1270 | 9.56 | 6.0 | 30 |
-| 3840×2160 | Performance | 1920×1080 | 9.65 | 4.1 | 48–50 |
-| 3840×2160 | Ultra Performance | 1280×720 | 9.78 | 2.5 | 60 |
+| Render → output | Mode | Benchmark (ms) | In the app (ms) | Scene (ms) | Frame rate |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 640×360 → 1920×1080 | Ultra Performance | 2.78 | 2.64 | 0.7 | 60 |
+| 1280×720 → 1920×1080 | Quality | 2.84 | 2.67 | 1.0 | 60 |
+| 1280×720 → 2560×1440 | Performance | 4.74 | 4.36 | 1.1 | 60 |
+| 1706×960 → 2560×1440 | Quality | 4.83 | 4.42 | 5.1 | 60 |
+| 1920×1080 → 3840×2160 | Performance | 10.60 | 9.75 | 1.4 | 60 |
+| 1280×720 → 3840×2160 | Ultra Performance | 10.66 | 9.76 | 1.0 | 60 |
 
-FSR4's cost follows the output size: the network runs at output resolution, so
-the quality mode mostly changes what the scene costs. Composing the display
-frame adds 1.6 to 1.9 ms. The driver runs a frame's submissions and the flip
-one after another, so a frame longer than 16.7 ms waits for the next vblank. At
-4K, only Ultra Performance leaves room for this ray-marched scene at 60 fps.
-The native comparison views render the scene a second time at output size,
-which costs 3.8 ms at 1080p and about 16 ms at 4K.
+FSR 4's cost follows the output size: the network runs at output resolution.
+The scene costs between 0.5 and 5 ms, depending on the shot and the render
+size; the view over the roofs is the most expensive. Composing the display
+frame adds 1.6 to 1.9 ms.
 
 ## Download
 
 Every [pre-release](https://github.com/blackbearreloaded/ps5-fsr4/releases)
-has `ps5-fsr4-showcase-VERSION-PPSA99010.zip`, built by GitHub Actions. Extract
-it, upload the `PPSA99010` folder to `/data/homebrew/` on a PS5 running a
-homebrew loader with ShadowMountPlus, and start **PS5 FSR4 Showcase** from the
-home screen once it is registered.
+after 0.1.0 has `ps5-fsr4-showcase-VERSION-PPSA99011.zip`, built by GitHub
+Actions. Extract it, upload the `PPSA99011` folder to `/data/homebrew/` on a
+PS5 running a homebrew loader with ShadowMountPlus, and start **PS5 FSR4
+Showcase** from the home screen once it is registered. Release 0.1.0 carried
+an earlier showcase under the title PPSA99010; the two install side by side.
 
 ## Build and install
 
@@ -106,40 +110,63 @@ Stage the SDK first (`make sdk`, see [BUILDING.md](../../BUILDING.md)), then:
 make showcase
 ```
 
-This builds `build/fsr4-showcase/PPSA99010` with the SDK's warmed pipeline
-cache. Upload the `PPSA99010` folder to `/data/homebrew/` and launch it from the
+This builds `build/fsr4-showcase/PPSA99011` with the SDK's warmed pipeline
+cache. Upload the `PPSA99011` folder to `/data/homebrew/` and launch it from the
 home screen once it is registered. The app runs until it is closed. It writes
 `fsr4-showcase-log.txt` to `/data/fsr4-results` (or to its own `results`
-folder) with `FSR4_SHOWCASE_*` lines: setup, chapters and averaged timings
-every 120 frames.
+folder) with `FSR4_SHOWCASE_*` lines: setup, chapters, benchmark results and
+averaged timings every 120 frames.
 
 `SHOWCASE_ARGS` passes options to `tools/build_fsr4_showcase.py`:
 
-- `--release VERSION` also writes `ps5-fsr4-showcase-VERSION-PPSA99010.zip`,
+- `--release VERSION` also writes `ps5-fsr4-showcase-VERSION-PPSA99011.zip`,
   the package with a README, `notices/` and `SHA256SUMS`, and its SHA-256. The
-  app embeds FSR4 material under AMD's MIT terms, whose notice must stay with
-  every copy ([THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md#amd-fsr4-material)).
+  package's content version follows the release: 0.Y.Z carries `01.00Y.00Z`.
+  The app embeds FSR4 material under AMD's MIT terms, whose notice must stay
+  with every copy ([THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md#amd-fsr4-material)).
   `make release VERSION=...` packages the whole release
   ([docs/RELEASING.md](../../docs/RELEASING.md)).
-- `--screenshots` saves a 1920×1080 BGRA frame of each chapter during the first
-  tour (`fsr4-showcase-NN.bgra`, next to the log).
-- `--selftest` replaces the controller with a scripted walk: every view at
-  every quality mode of each output, then each toggle. It logs one
-  `FSR4_SHOWCASE_STEP` line with averaged timings per setting and ends with
-  `FSR4_SHOWCASE_SELFTEST_DONE`.
+- `--selftest` replaces the controller with a scripted walk: the six scenarios,
+  the comparisons, the menu and the benchmark. It logs one
+  `FSR4_SHOWCASE_STEP` line with averaged timings and saves one 1920×1080 BGRA
+  frame per step (`fsr4-showcase-NAME.bgra`, next to the log), then ends with
+  `FSR4_SHOWCASE_SELFTEST_DONE` and closes the title.
+- `--host` builds `build/fsr4-showcase-host/fsr4_showcase` instead: the same
+  app for desktop Vulkan, without a display or a controller.
+
+## Host preview
+
+The host build runs the scripted walk off-screen and saves its frames, which is
+how the scene and the menu were made. It needs the generated runtime tables
+(`make runtime`) and a Vulkan driver; Mesa's lavapipe upscales a 1080p frame
+in a quarter of a second.
+
+```sh
+make showcase SHOWCASE_ARGS=--host
+cd build/fsr4-showcase-host
+SHOWCASE_STEPS=1,6 SHOWCASE_STEP_FRAMES=24 ./fsr4_showcase   # frames/fsr4-showcase-NAME.bgra
+SHOWCASE_KEYS=oddrx ./fsr4_showcase                           # button presses instead of the walk
+```
+
+`SHOWCASE_STEPS` picks steps of the walk by number and `SHOWCASE_STEP_FRAMES`
+sets how long each runs. `SHOWCASE_KEYS` plays one button every four frames
+(`o` OPTIONS, `u d l r` the D-pad, `x` Cross, `c` Circle, `s` Square,
+`t` Triangle, `1` L1, `2` R1, `p` Touchpad, `.` nothing) and saves the last
+frame as `fsr4-showcase-keys.bgra`.
 
 ## Launch assets
 
-The package currently uses the native app template's generic icon, backgrounds
-and music. To replace them, add any of these files to `sce_sys/` in this
-directory. The builder takes each file it finds there and the template's for
-the rest:
+`sce_sys/` holds the icon, the two backgrounds and the selection music.
+`tools/build_fsr4_showcase_assets.py` composes them: the pictures are stills of
+the scene, rendered off-screen and averaged over jittered samples, with the
+backgrounds encoded as BC7; the music is synthesized by the same tool and
+encoded with [ps5-at9-converter](https://github.com/blackbearreloaded/ps5-at9-converter).
 
 | File | Format |
 | --- | --- |
 | `icon0.png` | 512×512 PNG |
 | `pic0.dds`, `pic1.dds` | 3840×2160 BC7 DDS (DX10 header) |
-| `snd0.at9` | ATRAC9 |
+| `snd0.at9` | ATRAC9, 48 kHz stereo |
 
-The HUD text uses DejaVu Sans, rasterized at build time from the system font
-(`fonts-dejavu-core`) under the Bitstream Vera license.
+The HUD and the signs use DejaVu Sans, rasterized at build time from the system
+font (`fonts-dejavu-core`) under the Bitstream Vera license.

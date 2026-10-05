@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The showcase city's signs: four 2048x1024 signs of 8-bit coverage in one 4096x2048 image.
 
-apps/showcase/city.comp reads it from a storage buffer and thresholds it, so
+examples/fsr4_showcase/city.comp reads it from a storage buffer and thresholds it, so
 the lettering keeps a hard edge at any magnification. The text is rasterized
 from DejaVu Sans (fonts-dejavu-core) with Pillow.
 
