@@ -76,7 +76,8 @@ after a minute without input.
 
 ## Performance on PS5
 
-The six scenarios, measured by the `--selftest` build on a PS5. *Benchmark* is
+The six scenarios, measured by the `--selftest` build on a PS5 with system
+software 13. *Benchmark* is
 what the app's own benchmark reports: the mean of 300 FSR 4 frames submitted
 back to back, each timed from submission to completion on the GPU. *In the app*
 is the same measurement at the 60 fps the app runs at.
@@ -94,6 +95,23 @@ FSR 4's cost follows the output size: the network runs at output resolution.
 The scene costs between 0.5 and 5 ms, depending on the shot and the render
 size; the view over the roofs is the most expensive. Composing the display
 frame adds 1.6 to 1.9 ms.
+
+## System software
+
+| System software | Result |
+| --- | --- |
+| 13.x | 60 fps in every scenario; the numbers above |
+| 10.x | Runs at about 28 fps |
+
+System software 10 completes a GPU submission only at the next display
+refresh, whatever its size. The app notices this when it starts and sends the
+whole frame as one submission there, which leaves two refreshes per frame: one
+for the frame's work and one for the flip. The times of the frame's parts are
+then not known, so the on-screen display says so instead of showing them, and
+the benchmark only measures that wait. Other versions have not been tried.
+
+If the GPU fails, the app writes the failing stage to its log and returns to
+the home screen.
 
 ## Download
 
@@ -134,6 +152,10 @@ averaged timings every 120 frames.
   `FSR4_SHOWCASE_STEP` line with averaged timings and saves one 1920×1080 BGRA
   frame per step (`fsr4-showcase-NAME.bgra`, next to the log), then ends with
   `FSR4_SHOWCASE_SELFTEST_DONE` and closes the title.
+- `--diagnose` builds an app for a console where the showcase does not start:
+  it runs each GPU stage on its own, logs the system software version, each
+  stage and the Vulkan driver's own messages (`fsr4-showcase-driver-log.txt`,
+  next to the log), and closes itself.
 - `--host` builds `build/fsr4-showcase-host/fsr4_showcase` instead: the same
   app for desktop Vulkan, without a display or a controller.
 

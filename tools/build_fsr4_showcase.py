@@ -20,6 +20,7 @@ import re
 import struct
 import subprocess
 import sys
+import time
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -163,7 +164,10 @@ def main():
                         help="The generated FSR4 runtime tables a --host build compiles in")
     parser.add_argument("--selftest", action="store_true",
                         help="Replace the pad with a scripted walk that logs timings, saves frames and exits")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="Run each GPU stage on its own before the first frame, log it and exit")
     parser.add_argument("--release", metavar="VERSION", help="Also write the release zip and its SHA-256")
+    parser.add_argument("--define", action="append", default=[], metavar="NAME=VALUE", help=argparse.SUPPRESS)
     args = parser.parse_args()
     out = (args.out or ROOT / ("build/fsr4-showcase-host" if args.host else "build/fsr4-showcase")).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -172,7 +176,10 @@ def main():
     assets = out / "assets" if args.host else out / TITLE_ID / "assets"
     assets.mkdir(parents=True, exist_ok=True)
     (assets / "signs.bin").write_bytes(build_signs().tobytes())
+    run = time.strftime("%H%M%S", time.gmtime())
     defines = [*(["SHOWCASE_SELFTEST=1"] if args.selftest else []),
+               *(["SHOWCASE_DIAG=1", f'SHOWCASE_DIAG_RUN="{run}"'] if args.diagnose else []),
+               *args.define,
                *([f'SHOWCASE_VERSION="{args.release}"'] if args.release else [])]
     if args.host:
         print(json.dumps(dict(binary=str(host_build(out, args.runtime.resolve(), defines)), assets=str(assets),
@@ -193,10 +200,11 @@ def main():
                      param_overrides=dict(contentVersion=content_version(args.release),
                                 pubtools=dict(loudnessSnd0=LOUDNESS_SND0) if "snd0.at9" in own_assets else {}))
     result = dict(package=str(out / TITLE_ID), pipeline_cache=cache.exists(), selftest=args.selftest,
+                  **(dict(diagnose=run) if args.diagnose else {}),
                   launch_assets=own_assets or "generic", font=font)
     if args.release:
-        if args.selftest:
-            raise SystemExit("a release is built without --selftest")
+        if args.selftest or args.diagnose:
+            raise SystemExit("a release is built without --selftest or --diagnose")
         result["release"] = release(out, args.release)
     print(json.dumps(result, indent=2))
 

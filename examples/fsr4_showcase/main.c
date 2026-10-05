@@ -28,6 +28,7 @@
 #include <ps5vk/ps5vk_present.h>
 #endif
 #include <ps5fsr4/ps5_fsr4.h>
+#include <fcntl.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -53,12 +54,27 @@ extern int scePadOpen(int32_t user, int32_t type, int32_t index, const void *par
 extern int scePadReadState(int32_t handle, void *data);
 extern int sceSystemServiceLoadExec(const char *path, char *const argv[]);
 extern int sceSystemServiceHideSplashScreen(void);
+extern void ps5log_set_mirror_fd(int fd);  /* the Vulkan driver's log, for a diagnostic build */
+extern void *sceAgcGetRegisterDefaults(void);
+extern int sceKernelGetSystemSwVersion(void *version);
 extern int fsr4_native_heap_init(void);
 #define ASSET_ROOT "/app0/assets"
 #endif
 
 #ifndef SHOWCASE_SELFTEST
 #define SHOWCASE_SELFTEST 0  /* 1: replace the pad with a scripted walk that logs timings and saves frames */
+#endif
+#ifndef SHOWCASE_DIAG
+#define SHOWCASE_DIAG 0      /* 1: run each GPU stage on its own before the first frame, log it and exit */
+#endif
+#ifndef SHOWCASE_DIAG_RUN
+#define SHOWCASE_DIAG_RUN "0"
+#endif
+#ifndef SHOWCASE_DRIVER_LOG
+#define SHOWCASE_DRIVER_LOG 0  /* N: keep the Vulkan driver's log of the first N frames next to the app's */
+#endif
+#ifndef SHOWCASE_FORCE_SINGLE
+#define SHOWCASE_FORCE_SINGLE 0  /* 1: one submission per frame, as on system software 10 */
 #endif
 #ifndef SHOWCASE_VERSION
 #define SHOWCASE_VERSION "dev"
@@ -236,6 +252,13 @@ static int begin(void)
     return 0;
 }
 
+/* What the GPU was last asked to do, for the error report. */
+static const char *stage = "setup";
+/* System software 10 completes a GPU submission only at the next display refresh. A frame of
+ * three submissions and a flip then takes four refreshes, so there the whole frame goes out as
+ * one submission, and the times of its parts are not known. */
+static int period_bound;
+
 static int submit(double *elapsed)
 {
     CHECK(vkEndCommandBuffer(cmd));
@@ -243,9 +266,9 @@ static int submit(double *elapsed)
     double t0 = now_ms();
     CHECK(vkQueueSubmit(queue, 1, &s, fence));
     VkResult wait = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_C(10000000000));
-    if (wait != VK_SUCCESS) {
-        report("FSR4_SHOWCASE_ERROR fence=%d\n", (int)wait);
-        for (;;) usleep(100000);  /* never release resources with unknown completion */
+    if (wait != VK_SUCCESS) {  /* the job is lost and nothing more can be drawn: main() leaves the title */
+        report("FSR4_SHOWCASE_ERROR fence=%d stage=%s after_ms=%.0f\n", (int)wait, stage, now_ms() - t0);
+        return 1;
     }
     if (elapsed) *elapsed = now_ms() - t0;
     CHECK(vkResetFences(device, 1, &fence));
@@ -714,8 +737,9 @@ static void label(uint32_t *overlay, int cx, int y, enum hud_face face, const ch
 
 static void timings_text(char *text, size_t size)
 {
-    snprintf(text, size, "FSR 4 %.2f ms · scene %.2f ms · %.0f fps", stats.fsr4_ms, stats.scene_ms,
-             stats.frame_ms > 0 ? 1000.0 / stats.frame_ms : 0.0);
+    const double fps = stats.frame_ms > 0 ? 1000.0 / stats.frame_ms : 0.0;
+    if (period_bound) snprintf(text, size, "One GPU submission per display refresh · %.0f fps", fps);
+    else snprintf(text, size, "FSR 4 %.2f ms · scene %.2f ms · %.0f fps", stats.fsr4_ms, stats.scene_ms, fps);
 }
 
 static void draw_status(uint32_t *overlay)
@@ -852,7 +876,9 @@ static void draw_bench(uint32_t *overlay)
              "on the GPU.", (int)BENCH_FRAMES);
     hud_text(overlay, x, y, HUD_SMALL, note, GREY);
     hud_text(overlay, x, y + hud_line_height(HUD_SMALL) + 2, HUD_SMALL,
-             bench.phase == BENCH_RUNNING ? "○ cancel" : "README: the project's own measurements.     ○ close", GREY);
+             bench.phase == BENCH_RUNNING ? "○ cancel" :
+             period_bound ? "This system software completes a submission only at a display refresh: these are waits.     ○ close" :
+             "README: the project's own measurements.     ○ close", GREY);
 }
 
 static void draw_hud(uint32_t *overlay)
@@ -967,8 +993,70 @@ static void save_frame(const struct buffer *screenshot, const char *name)
     report("FSR4_SHOWCASE_SCREENSHOT name=%s saved=%d\n", name, f != NULL);
 }
 
+#if SHOWCASE_DIAG && !defined(SHOWCASE_HOST)
+/* The system software's table of register defaults, which the driver's draws start from. */
+static void diag_defaults(void)
+{
+    static const uint32_t colour[16] = {0x318, 0x31b, 0x31c, 0x31d, 0x31e, 0x31f, 0x321, 0x323,
+                                        0x324, 0x325, 0x390, 0x398, 0x3a0, 0x3a8, 0x3b0, 0x3b8};
+    struct reg { uint32_t offset, value; };
+    struct pair { uint32_t key, encoded; };
+    const struct { struct reg **cx, **sh, **uc, **t3; uint64_t u20, u28; struct pair *pairs; uint32_t count, r3c; } *root =
+        sceAgcGetRegisterDefaults();
+    report("FSR4_SHOWCASE_DIAG defaults root=%p" "\n", (void *)root);
+    if (!root) return;
+    report("FSR4_SHOWCASE_DIAG defaults cx=%p sh=%p uc=%p t3=%p u20=%llx u28=%llx pairs=%p count=%u r3c=%u" "\n",
+           (void *)root->cx, (void *)root->sh, (void *)root->uc, (void *)root->t3, (unsigned long long)root->u20,
+           (unsigned long long)root->u28, (void *)root->pairs, root->count, root->r3c);
+    const uintptr_t low = 0x10000, high = UINT64_C(0x800000000000);
+    if ((uintptr_t)root->pairs < low || (uintptr_t)root->pairs > high || (uintptr_t)root->cx < low ||
+        (uintptr_t)root->cx > high || !root->count || root->count > 1024)
+        return;
+    uint32_t banks[4] = {0}, top[4] = {0};
+    char line[600];
+    int n = 0;
+    for (uint32_t i = 0; i < root->count; ++i) {
+        const uint32_t bank = root->pairs[i].encoded & 3u, index = root->pairs[i].encoded >> 2;
+        ++banks[bank];
+        if (index > top[bank]) top[bank] = index;
+        n += snprintf(line + n, sizeof(line) - (size_t)n, " %08x:%x", root->pairs[i].key, root->pairs[i].encoded);
+        if (i % 16 == 15 || i + 1 == root->count) {
+            report("FSR4_SHOWCASE_DIAG pairs %u%s" "\n", i / 16, line);
+            n = 0;
+        }
+        if (root->pairs[i].key == UINT32_C(0x38e92c91))
+            report("FSR4_SHOWCASE_DIAG defaults mrt0 entry=%u bank=%u index=%u" "\n", i, bank, index);
+    }
+    report("FSR4_SHOWCASE_DIAG defaults banks=%u,%u,%u,%u top=%u,%u,%u,%u" "\n", banks[0], banks[1], banks[2], banks[3],
+           top[0], top[1], top[2], top[3]);
+    for (uint32_t index = 0; index <= top[0] && index < 512; ++index) {  /* blocks that start like a colour target */
+        const struct reg *block = root->cx[index];
+        if ((uintptr_t)block < low || (uintptr_t)block > high || block[0].offset != colour[0]) continue;
+        int same = 1;
+        n = 0;
+        for (int k = 0; k < 16; ++k) {
+            same &= block[k].offset == colour[k];
+            n += snprintf(line + n, sizeof(line) - (size_t)n, " %x:%08x", block[k].offset, block[k].value);
+        }
+        report("FSR4_SHOWCASE_DIAG colour block index=%u same_offsets=%d%s" "\n", index, same, line);
+    }
+}
+#endif
+
 static int run(void)
 {
+#if (SHOWCASE_DIAG || SHOWCASE_DRIVER_LOG) && !defined(SHOWCASE_HOST)
+    {   /* keep what the driver says next to the app's own log */
+        char path[256];
+        snprintf(path, sizeof(path), "%s/fsr4-showcase-driver-log.txt", output_root());
+        ps5log_set_mirror_fd(open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666));
+        /* The system software and its table of register defaults, which the driver's draws depend on. */
+        struct { size_t size; char text[28]; uint32_t number; } sw = {.size = sizeof(sw)};
+        const int sw_rc = sceKernelGetSystemSwVersion(&sw);
+        sw.text[27] = 0;
+        report("FSR4_SHOWCASE_DIAG system rc=%d version=%s number=%08x\n", sw_rc, sw.text, sw.number);
+    }
+#endif
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
     VkInstance instance;
@@ -1107,7 +1195,93 @@ static int run(void)
     report("FSR4_SHOWCASE_READY version=%s display=%dx%d pad=%d cache_in=%zu\n", SHOWCASE_VERSION, DISPLAY_W,
            DISPLAY_H, pad, cache_bytes);
 
+    {   /* Small dispatches tell how submissions complete here: the quickest of them in a
+         * millisecond or two, or every one of them at a display refresh. */
+        double probe = 1e9, ms = 0;
+        const struct { float eye[4], view[4], prev_eye[4], prev_view[4], frame[4]; } tiny = {
+            {6, 4, -100, 0}, {1.57f, 0, 0.6f, 0}, {6, 4, -100, 0}, {1.57f, 0, 0.6f, 0}, {0, 0, 8, 8}};
+        stage = "probe";
+        for (int i = 0; i < 6; ++i) {
+            if (begin()) return 1;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scene.pipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scene.layout, 0, 1, &scene.set, 0, NULL);
+            vkCmdPushConstants(cmd, scene.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(tiny), &tiny);
+            vkCmdDispatch(cmd, 1, 1, 1);
+            if (submit(&ms)) return 1;
+            if (ms < probe) probe = ms;
+        }
+#ifdef SHOWCASE_HOST
+        period_bound = getenv("SHOWCASE_SINGLE") != NULL;  /* a software renderer is slow for other reasons */
+#else
+        period_bound = probe > 8.0 || SHOWCASE_FORCE_SINGLE;
+#endif
+        report("FSR4_SHOWCASE_SUBMIT probe_ms=%.2f single=%d\n", probe, period_bound);
+    }
     struct pose pose = shot_pose(0, 0), previous = pose;
+#if SHOWCASE_DIAG && !defined(SHOWCASE_HOST)
+    {   /* Each GPU stage on its own, smallest first: the log's last line names the one that fails. */
+        diag_defaults();
+        double ms = 0;
+        const uint32_t sizes[4][2] = {{64, 64}, {640, 360}, {1280, 720}, {1280, 720}};
+        for (int step = 0; step < 9; ++step) {
+            static const char *const names[9] = {"empty", "fsr4", "compose-blit", "present", "native-64",
+                                                 "scene-64", "scene-360p", "scene-720p", "frame"};
+            stage = names[step];
+            if (step == 3) {
+                const double t = now_ms();
+                VkResult pr = ps5vkPresentFrame(surface, 0, 1);
+                report("FSR4_SHOWCASE_DIAG stage=%s result=%d ms=%.2f hide=%08x\n", stage, (int)pr, now_ms() - t,
+                       (unsigned)sceSystemServiceHideSplashScreen());
+                if (pr != VK_SUCCESS) return 1;
+                continue;
+            }
+            if (begin()) return 1;
+            if (step == 1 || step == 8) {
+                memory_barrier(VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+                ps5fsr4_dispatch_desc dd = {.struct_size = sizeof(dd), .command_buffer = cmd,
+                    .color = target.color.view, .depth = target.depth.view, .motion_vectors = target.motion.view,
+                    .output = target.upscaled.view, .color_layout = VK_IMAGE_LAYOUT_GENERAL,
+                    .depth_layout = VK_IMAGE_LAYOUT_GENERAL, .motion_vectors_layout = VK_IMAGE_LAYOUT_GENERAL,
+                    .render_width = 1280, .render_height = 720, .motion_vector_scale_x = 1280, .motion_vector_scale_y = 720,
+                    .pre_exposure = 1.0f, .frame_time_delta_ms = 16.7f, .camera_near = 0.2f, .camera_far = 4000.0f,
+                    .camera_fov_vertical = 2.0f * atanf(pose.tan_half), .reset = 1};
+                if (ps5fsr4_dispatch(target.context, &dd)) return 1;
+            } else if (step == 2) {
+                struct { int32_t view[4], lens[4], sizes[4]; } cp = {{0, 0, DISPLAY_W / 2, 0}, {0, 0, LENS_RADIUS, 0},
+                                                                      {1280, 720, DISPLAY_W, DISPLAY_H}};
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compose.pipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compose.layout, 0, 1, &compose.set, 0, NULL);
+                vkCmdPushConstants(cmd, compose.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cp), &cp);
+                vkCmdDispatch(cmd, DISPLAY_W / 8, (DISPLAY_H + 7) / 8, 1);
+                image_barrier(composed.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+                VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = blit.pass,
+                    .framebuffer = blit.framebuffers[0], .renderArea = {{0, 0}, {DISPLAY_W, DISPLAY_H}}};
+                vkCmdBeginRenderPass(cmd, &rb, VK_SUBPASS_CONTENTS_INLINE);
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blit.pipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blit.layout, 0, 1, &blit.set, 0, NULL);
+                vkCmdDraw(cmd, 3, 1, 0, 0);
+                vkCmdEndRenderPass(cmd);
+            }
+            if (step >= 4) {
+                const struct compute *c = step == 4 ? &native_scene : &scene;
+                const uint32_t w = sizes[step == 4 ? 0 : step == 8 ? 3 : step - 5][0], h = sizes[step == 4 ? 0 : step == 8 ? 3 : step - 5][1];
+                struct { float eye[4], view[4], prev_eye[4], prev_view[4], frame[4]; } sp = {
+                    {pose.x, pose.y, pose.z, 0.0f}, {pose.yaw, pose.pitch, pose.tan_half, 0.0f},
+                    {pose.x, pose.y, pose.z, 0.0f}, {pose.yaw, pose.pitch, pose.tan_half, 0.0f}, {0.0f, 0.0f, (float)w, (float)h}};
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->pipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->layout, 0, 1, &c->set, 0, NULL);
+                vkCmdPushConstants(cmd, c->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(sp), &sp);
+                vkCmdDispatch(cmd, (w + 7) / 8, (h + 7) / 8, 1);
+            }
+            if (submit(&ms)) return 1;
+            report("FSR4_SHOWCASE_DIAG stage=%s ok ms=%.2f\n", stage, ms);
+        }
+        return 0;
+    }
+#endif
     uint32_t last_buttons = 0, jitter_index = 0, sum_frames = 0;
     int reset = 1, reported_chapter = -1, last_shot = -1, last_camera = state.camera;
     double start = now_ms(), last_input = start, last_hud = 0, last_frame_start = start, scene_time = 0, previous_time = 0;
@@ -1122,6 +1296,9 @@ static int run(void)
         const double frame_start = now_ms(), dt = frame ? fmin(100.0, frame_start - last_frame_start) : 16.7;
 #endif
         last_frame_start = frame_start;
+#if SHOWCASE_DRIVER_LOG && !defined(SHOWCASE_HOST)
+        if (frame == SHOWCASE_DRIVER_LOG) ps5log_set_mirror_fd(-1);
+#endif
         (void)last_frame_start;
         previous = pose;
         previous_time = scene_time;
@@ -1315,8 +1492,18 @@ static int run(void)
             {pose.x, pose.y, pose.z, (float)scene_time}, {pose.yaw, pose.pitch, pose.tan_half, 0.0f},
             {previous.x, previous.y, previous.z, (float)previous_time},
             {previous.yaw, previous.pitch, previous.tan_half, 0.0f}, {jx, jy, (float)rw, (float)rh}};
-        double scene_ms, fsr_ms = 0, compose_ms;
+        double scene_ms = 0, fsr_ms = 0, compose_ms;
+        const int single = period_bound && !measuring;  /* the whole frame in one submission */
+        stage = "scene";
         if (begin()) return 1;
+#ifndef SHOWCASE_HOST
+        if (frame) {  /* The previous frame's draw left the composed frame read-only. The driver ends a
+                       * native submission at a layout change, so it comes before the frame's dispatches. */
+            image_barrier(composed.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                          VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        }
+#endif
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scene.pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scene.layout, 0, 1, &scene.set, 0, NULL);
         vkCmdPushConstants(cmd, scene.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(scene_params), &scene_params);
@@ -1331,11 +1518,12 @@ static int run(void)
                                &scene_params);
             vkCmdDispatch(cmd, (ow + 7) / 8, (oh + 7) / 8, 1);
         }
-        if (submit(&scene_ms)) return 1;
+        if (!single && submit(&scene_ms)) return 1;
 
         /* FSR4: once, or a batch of timed dispatches while the benchmark runs. */
         for (int pass = 0; pass < (measuring ? BENCH_BATCH : 1); ++pass) {
-            if (begin()) return 1;
+            stage = "fsr4";
+            if (!single && begin()) return 1;
             memory_barrier(VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
             ps5fsr4_dispatch_desc dd = {.struct_size = sizeof(dd), .command_buffer = cmd,
@@ -1349,7 +1537,7 @@ static int run(void)
                 .enable_sharpening = !measuring && state.sharpen > 0, .sharpness = state.sharpen / 10.0f};
             ps5fsr4_result fr = ps5fsr4_dispatch(target.context, &dd);
             if (fr) { report("FSR4_SHOWCASE_ERROR dispatch=%d\n", (int)fr); return 1; }
-            if (submit(&fsr_ms)) return 1;
+            if (!single && submit(&fsr_ms)) return 1;
             reset = 0;
             if (!measuring) break;
             if (bench.frame++ >= BENCH_WARMUP) bench.sum += fsr_ms;
@@ -1390,14 +1578,8 @@ static int run(void)
             {VIEWS[view].left, VIEWS[view].right, (int32_t)state.split, zoom},
             {(int32_t)state.lens_x, (int32_t)state.lens_y, LENS_RADIUS, capture},
             {(int32_t)rw, (int32_t)rh, (int32_t)ow, (int32_t)oh}};
-        if (begin()) return 1;
-#ifndef SHOWCASE_HOST
-        if (frame) {  /* the previous frame's draw left the composed frame read-only */
-            image_barrier(composed.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                          VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-        }
-#endif
+        stage = single ? "frame" : "compose";
+        if (!single && begin()) return 1;
         memory_barrier(VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compose.pipeline);
@@ -1458,13 +1640,16 @@ int main(void)
     int result = fsr4_native_heap_init();
     report("FSR4_SHOWCASE_BEGIN heap=%d\n", result);
     if (!result) result = run();
+    if (SHOWCASE_DIAG) report("FSR4_SHOWCASE_DIAG_END run=" SHOWCASE_DIAG_RUN " result=%d\n", result);
     report("FSR4_SHOWCASE_END result=%s\n", result ? "FAIL" : "EXIT");
     if (log_file) fclose(log_file);
 #ifdef SHOWCASE_HOST
     return result;
 #else
-    if (SHOWCASE_SELFTEST && !result) {  /* a self-test ends the title itself once the log can be fetched */
-        sleep(15);
+    /* A self-test ends the title itself once the log can be fetched. After a fatal error
+     * nothing can be drawn any more: leave for the home screen instead of a frozen picture. */
+    if (SHOWCASE_SELFTEST || SHOWCASE_DIAG || result) {
+        sleep(SHOWCASE_SELFTEST || SHOWCASE_DIAG ? 15 : 3);
         sceSystemServiceLoadExec("exit", NULL);
     }
     for (;;) usleep(100000);
