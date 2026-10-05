@@ -1,34 +1,28 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Compose the PS5 FSR4 Showcase's launch assets (examples/fsr4_showcase/sce_sys).
+"""Helpers for the PS5 FSR4 Showcase's launch assets (examples/fsr4_showcase/sce_sys).
 
-The pictures are stills of the app's own scene, rendered off-screen from
-examples/fsr4_showcase/city.comp and averaged over jittered samples:
+The icon and the backgrounds there are artwork made for the app. This tool
+turns pictures into the files the console wants and makes the music:
 
-  --icon STILL   a square still       -> icon0.png, 512x512, with the title
-  --pic0 STILL   a 3840x2160 still    -> pic0.dds, the launch screen, with the title
-  --pic1 STILL   a 3840x2160 still    -> pic1.dds, the home screen background
-  --music        synthesize the selection music -> snd0.wav (48 kHz stereo, loops)
+  --pic0 PICTURE  a 3840x2160 picture -> pic0.dds, the home screen background
+  --pic1 PICTURE  a 3840x2160 picture -> pic1.dds, shown while the app starts
+  --music         synthesize the selection music -> snd0.wav (48 kHz stereo, loops)
 
 The backgrounds are written as BC7 with a DX10 header, encoded here (mode 6
-only: one pair of endpoints per block, which suits a still without alpha).
+only: one pair of endpoints per block, which suits a picture without alpha).
 snd0.wav becomes snd0.at9 with https://github.com/blackbearreloaded/ps5-at9-converter.
-Needs numpy and Pillow, and DejaVu Sans (fonts-dejavu-core) for the lettering.
+Needs numpy and Pillow.
 """
 import argparse
 from pathlib import Path
 import struct
-import sys
 import wave
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tools"))
-from fsr4_showcase_signs import font_path  # noqa: E402
-
-TITLE, TAGLINE = "PS5 FSR4 Showcase", "FSR 4 upscaling on the console GPU"
 BC7_WEIGHTS = np.array([0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64], np.float32) / 64.0
 
 
@@ -83,24 +77,6 @@ def write_dds(path, image):
     path.write_bytes(header + data)
 
 
-def lettering(image, title_size, tagline_size, margin, bottom):
-    """The title and the tagline over a shade that keeps them readable."""
-    from PIL import Image, ImageDraw, ImageFont
-    w, h = image.size
-    shade = Image.new("L", (1, h))
-    start = bottom - title_size * 3.2
-    shade.putdata([int(210 * min(1.0, max(0.0, (y - start) / (title_size * 2.4)))) for y in range(h)])
-    image = Image.composite(Image.new("RGB", (w, h), (4, 6, 14)), image, shade.resize((w, h)))
-    draw = ImageDraw.Draw(image)
-    bold = ImageFont.truetype(str(font_path("DejaVuSans-Bold.ttf")), title_size)
-    plain = ImageFont.truetype(str(font_path("DejaVuSans.ttf")), tagline_size)
-    draw.text((margin, bottom - title_size - tagline_size * 2.2), TITLE, font=bold, fill=(255, 255, 255))
-    draw.rectangle((margin, bottom - tagline_size * 1.55, margin + title_size * 1.4, bottom - tagline_size * 1.55 + max(3, title_size // 14)),
-                   fill=(255, 132, 44))
-    draw.text((margin, bottom - tagline_size * 1.15), TAGLINE, font=plain, fill=(200, 208, 220))
-    return image
-
-
 def music(seconds=32.0, rate=48000):
     """A slow loop for the home screen: four chords of soft pads, a plucked figure and a long room."""
     n = int(seconds * rate)
@@ -141,7 +117,6 @@ def music(seconds=32.0, rate=48000):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--icon", type=Path)
     parser.add_argument("--pic0", type=Path)
     parser.add_argument("--pic1", type=Path)
     parser.add_argument("--music", action="store_true")
@@ -149,22 +124,8 @@ def main():
     args = parser.parse_args()
     from PIL import Image
     args.out.mkdir(parents=True, exist_ok=True)
-    if args.icon:
-        icon = Image.open(args.icon).convert("RGB").resize((512, 512), Image.LANCZOS)
-        from PIL import ImageDraw, ImageFont
-        shade = Image.new("L", (1, 512))
-        shade.putdata([int(215 * min(1.0, max(0.0, (y - 300) / 130))) for y in range(512)])
-        icon = Image.composite(Image.new("RGB", (512, 512), (4, 6, 14)), icon, shade.resize((512, 512)))
-        draw = ImageDraw.Draw(icon)
-        bold = ImageFont.truetype(str(font_path("DejaVuSans-Bold.ttf")), 104)
-        small = ImageFont.truetype(str(font_path("DejaVuSans-Bold.ttf")), 30)
-        draw.text(((512 - draw.textlength("FSR 4", font=bold)) / 2, 340), "FSR 4", font=bold, fill=(255, 255, 255))
-        draw.rectangle((176, 456, 336, 461), fill=(255, 132, 44))
-        spaced = " ".join("SHOWCASE")
-        draw.text(((512 - draw.textlength(spaced, font=small)) / 2, 468), spaced, font=small, fill=(200, 208, 220))
-        icon.save(args.out / "icon0.png", optimize=True)
     if args.pic0:
-        write_dds(args.out / "pic0.dds", lettering(Image.open(args.pic0).convert("RGB"), 150, 58, 190, 1960))
+        write_dds(args.out / "pic0.dds", Image.open(args.pic0).convert("RGB"))
     if args.pic1:
         write_dds(args.out / "pic1.dds", Image.open(args.pic1).convert("RGB"))
     if args.music:

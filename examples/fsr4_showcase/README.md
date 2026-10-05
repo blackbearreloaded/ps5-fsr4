@@ -156,11 +156,13 @@ frame as `fsr4-showcase-keys.bgra`.
 
 ## Launch assets
 
-`sce_sys/` holds the icon, the two backgrounds and the selection music.
-`tools/build_fsr4_showcase_assets.py` composes them: the pictures are stills of
-the scene, rendered off-screen and averaged over jittered samples, with the
-backgrounds encoded as BC7; the music is synthesized by the same tool and
-encoded with [ps5-at9-converter](https://github.com/blackbearreloaded/ps5-at9-converter).
+`sce_sys/` holds the icon, the two backgrounds and the selection music. The
+icon and the backgrounds are artwork made for the app: `pic0.dds` is the home
+screen background and `pic1.dds` the picture shown while the app starts.
+`tools/build_fsr4_showcase_assets.py` encodes a 3840×2160 picture as BC7 for
+either background and synthesizes the music, which
+[ps5-at9-converter](https://github.com/blackbearreloaded/ps5-at9-converter)
+encodes.
 
 | File | Format |
 | --- | --- |
