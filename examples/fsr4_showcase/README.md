@@ -1,5 +1,7 @@
 # PS5 FSR4 Showcase
 
+![The showcase on a PS5: FSR 4 beside a bilinear upscale of the same 640×360 frame](../../docs/images/ps5-fsr4-showcase.png)
+
 A native PS5 app, packaged as its own title (**PPSA99011**, *PS5 FSR4 Showcase*),
 that shows what the `ps5_fsr4` SDK does on the console. It draws a city at dusk
 at a fraction of the output size, upscales it with FSR 4 and presents it at

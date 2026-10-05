@@ -1,5 +1,12 @@
 # PS5 FSR4
 
+[![PS5 FSR4 Showcase: FSR 4 beside a bilinear upscale of the same frame](docs/images/ps5-fsr4-showcase.png)](examples/fsr4_showcase/README.md)
+
+*The [showcase app](examples/fsr4_showcase/README.md) on a PS5, upscaling
+640×360 to 1920×1080 at 60 fps. Both lenses magnify the same spot of a
+resolution chart four times: FSR 4 on the left, a bilinear upscale of the same
+frame on the right.*
+
 > [!WARNING]
 > **Experimental.** FSR4 runs natively on the PS5 and passes its acceptance
 > against the WARP reference in every captured scenario up to 2560×1440.
