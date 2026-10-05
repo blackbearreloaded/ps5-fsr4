@@ -44,9 +44,9 @@ def glslang():
     return str(local) if local.exists() else os.environ.get("GLSLANG", "glslangValidator")
 
 
-def compile_shaders(out):
+def compile_shaders(out, shaders=SHADERS):
     header = ["#include <stdint.h>"]
-    for name, source, extra in SHADERS:
+    for name, source, extra in shaders:
         spv = out / f"fsr4_showcase_{name}.spv"
         subprocess.run([glslang(), "-V", "--target-env", "vulkan1.1", *extra, str(source), "-o", str(spv)],
                        check=True, stdout=subprocess.DEVNULL)
@@ -62,10 +62,10 @@ def font_path(name):
     raise SystemExit(f"{name} is missing; install fonts-dejavu-core")
 
 
-def build_font(out):
+def build_font(out, source=SOURCE):
     """fsr4_showcase_font.h: an 8-bit coverage atlas of every character the app draws."""
     from PIL import Image, ImageDraw, ImageFont
-    text = "".join(p.read_text(encoding="utf-8") for p in sorted(SOURCE.glob("*.c")))
+    text = "".join(p.read_text(encoding="utf-8") for p in sorted(source.glob("*.c")))
     codepoints = sorted(set(range(32, 127)) | {ord(c) for c in text if ord(c) > 127})
     def render(font, char):
         left, top, right, bottom = font.getbbox(char)  # from the origin at the ascent line

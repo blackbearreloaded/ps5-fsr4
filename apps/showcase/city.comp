@@ -1,0 +1,736 @@
+#version 450
+// Copyright (C) 2026 BlackBearReloaded
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// PS5 FSR4 Showcase scene: a city at dusk, ray cast per pixel at render
+// resolution with sub-pixel jitter. It is built from what an upscaler finds
+// hard: tram wires and strings of lights thinner than a pixel, a lattice
+// tower, chain-link fences, louvred and brick facades, lit windows, text and
+// a resolution chart on billboards, and traffic, a tram and a big wheel that
+// move. Nothing is filtered: every pixel is one sample, as in a game without
+// anti-aliasing. Writes linear HDR color, D3D-style depth and motion vectors
+// (previous minus current UV, without jitter) as FSR4 expects.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D color_out;
+layout(set = 0, binding = 1, std430) readonly buffer Signs { uint signs[]; };  // 8-bit coverage, SIGN_W x SIGN_H
+#ifndef SCENE_COLOR_ONLY  // the native reference renders color alone
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D depth_out;
+layout(set = 0, binding = 3, rgba32f) uniform writeonly image2D motion_out;
+#endif
+
+layout(push_constant) uniform Params {
+    vec4 eye;        // position, time (s)
+    vec4 view;       // yaw, pitch, tan(vertical fov / 2), unused
+    vec4 prev_eye;   // the previous frame's position and time
+    vec4 prev_view;
+    vec4 frame;      // jitter x, y (render pixels), render width, height
+} p;
+
+const float NEAR = 0.2, FAR = 4000.0, REACH = 1700.0, TALLEST = 180.0;
+const float CELL = 12.0, INSET = 0.75, FLOOR = 3.4, SHOP = 3.6;
+const float PI = 3.14159265;
+const int SIGN_W = 4096, SIGN_H = 2048;                    // four 2048x1024 signs
+const ivec2 PLAZA = ivec2(0, 0), PARK = ivec2(-2, 0), SQUARE = ivec2(0, -1);   // blocks kept clear
+const vec3 TOWER = vec3(36.0, 0.0, 36.0);
+const float TOWER_BASE = 11.0, TOWER_TOP = 1.2, TOWER_H = 118.0, MAST = 26.0;
+const vec3 HUB = vec3(-84.0, 25.0, 36.0);
+const float WHEEL_R = 20.0, WHEEL_RATE = 0.12;
+const vec3 WEST = vec3(-0.94, 0.0, 0.342);                 // where the sun went down
+
+const int SKY = 0, GROUND = 1, BUILDING = 2, ANTENNA = 3, LAMP = 4, LAMP_HEAD = 5, WIRE = 6, CAR = 7, TRAM = 8,
+          FENCE = 9, SIGN = 10, TOWER_ID = 11, DECK = 12, BEACON = 13, WHEEL = 14, GONDOLA = 15, BULB = 16,
+          TREE = 17, TRUNK = 18;
+
+struct Camera { vec3 origin, forward, right, up; float tan_half; };
+
+Camera camera(vec4 eye, vec4 view)
+{
+    float cy = cos(view.x), sy = sin(view.x), cp = cos(view.y), sp = sin(view.y);
+    vec3 f = vec3(cp * cy, sp, cp * sy), r = vec3(-sy, 0.0, cy);
+    return Camera(eye.xyz, f, r, cross(r, f), view.z);
+}
+
+// Screen UV of a world point for a camera (no jitter).
+vec2 project(Camera c, vec3 q, vec2 size)
+{
+    vec3 v = q - c.origin;
+    float z = max(dot(v, c.forward), 1e-3);
+    vec2 ndc = vec2(dot(v, c.right) / (z * c.tan_half * size.x / size.y), dot(v, c.up) / (z * c.tan_half));
+    return vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+}
+
+uvec2 pcg(uvec2 v)
+{
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * 1664525u; v.y += v.x * 1664525u;
+    v ^= v >> 16u;
+    v.x += v.y * 1664525u; v.y += v.x * 1664525u;
+    v ^= v >> 16u;
+    return v;
+}
+vec2 hash2(ivec2 c) { return vec2(pcg(uvec2(c)) >> 8u) * (1.0 / 16777216.0); }
+float hash1(ivec2 c) { return hash2(c).x; }
+vec3 hue(float h) { return clamp(abs(fract(h + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0); }
+
+// ---- The nearest hit so far.
+float g_t;
+int g_id;
+vec3 g_n;
+ivec2 g_cell;
+vec4 g_aux;
+void take(float t, int id, vec3 n, ivec2 cell, vec4 aux)
+{
+    if (t < g_t) { g_t = t; g_id = id; g_n = n; g_cell = cell; g_aux = aux; }
+}
+
+// ---- Ray primitives. Each returns the entry distance and the normal there.
+bool hit_box(vec3 o, vec3 inv, vec3 lo, vec3 hi, out float t, out vec3 n)
+{
+    vec3 a = (lo - o) * inv, b = (hi - o) * inv;
+    vec3 t0 = min(a, b), t1 = max(a, b);
+    float tn = max(max(t0.x, t0.y), t0.z), tf = min(min(t1.x, t1.y), t1.z);
+    t = tn;
+    n = -sign(inv) * vec3(greaterThanEqual(t0, vec3(tn)));
+    return tn < tf && tn > 0.0;
+}
+bool touches_box(vec3 o, vec3 inv, vec3 lo, vec3 hi)  // also from inside
+{
+    vec3 a = (lo - o) * inv, b = (hi - o) * inv;
+    vec3 t0 = min(a, b), t1 = max(a, b);
+    float tf = min(min(t1.x, t1.y), t1.z);
+    return max(max(t0.x, t0.y), t0.z) < tf && tf > 0.0 ;
+}
+bool hit_circle(vec2 o, vec2 d, vec2 c, float r, out float t, out vec2 n)
+{
+    vec2 oc = o - c;
+    float a = dot(d, d), b = dot(oc, d), disc = b * b - a * (dot(oc, oc) - r * r);
+    t = (-b - sqrt(max(disc, 0.0))) / max(a, 1e-9);
+    n = (oc + d * t) / r;
+    return disc > 0.0 && t > 0.0;
+}
+bool hit_sphere(vec3 o, vec3 d, vec3 c, float r, out float t, out float t_far, out vec3 n)
+{
+    vec3 oc = o - c;
+    float b = dot(oc, d), disc = b * b - (dot(oc, oc) - r * r), root = sqrt(max(disc, 0.0));
+    t = -b - root; t_far = -b + root;
+    n = (oc + d * t) / r;
+    return disc > 0.0 && t > 0.0;
+}
+bool hit_rod(vec3 o, vec3 d, vec3 a, vec3 b, float r, out float t, out vec3 n)
+{
+    vec3 ab = b - a, ao = o - a;
+    float l2 = dot(ab, ab), dd = dot(d, ab), od = dot(ao, ab);
+    float A = l2 - dd * dd, B = l2 * dot(ao, d) - od * dd, C = l2 * dot(ao, ao) - od * od - r * r * l2;
+    float disc = B * B - A * C;
+    t = (-B - sqrt(max(disc, 0.0))) / max(A, 1e-9);
+    float s = od + t * dd;
+    n = (ao + d * t - ab * (s / l2)) / r;
+    return disc > 0.0 && t > 0.0 && s > 0.0 && s < l2;
+}
+
+// ---- The city plan. Every fifth cell line is a street; the rest are lots.
+ivec2 block_of(ivec2 cell) { return ivec2(floor(vec2(cell) / 5.0)); }
+const int LOT_BUILDING = 0, LOT_PARK = 1, LOT_SIGN = 2, LOT_PLAZA = 3, LOT_WHEEL = 4, LOT_SQUARE = 5;
+
+// The sign a lot carries, or -1. The title stands on a corner of the avenue; the reading chart, the
+// resolution chart, the small print and the neon signs line the north side of the open square.
+// Other signs are drawn by lot.
+int forced_sign(ivec2 cell)
+{
+    if (cell == ivec2(-1, -9)) return 0;
+    if (cell.y == -1 && cell.x >= 1 && cell.x <= 4) return cell.x == 1 ? 1 : cell.x == 2 ? 4 : cell.x == 3 ? 3 : 2;
+    return -1;
+}
+int lot_kind(ivec2 cell, vec2 h)
+{
+    ivec2 block = block_of(cell);
+    if (block == PLAZA) return LOT_PLAZA;
+    if (block == PARK) return LOT_WHEEL;
+    if (forced_sign(cell) >= 0) return LOT_SIGN;
+    if (block == SQUARE) return LOT_SQUARE;
+    return h.x < 0.07 ? LOT_PARK : h.x < 0.11 ? LOT_SIGN : LOT_BUILDING;
+}
+float lot_height(ivec2 cell, vec2 h)
+{
+    vec2 away = (vec2(cell) + 0.5) * CELL - vec2(20.0, -40.0);
+    float core = exp(-dot(away, away) / (2.0 * 260.0 * 260.0));
+    float height = 9.0 + 20.0 * h.y + 100.0 * core * (0.25 + 0.75 * h.x * h.x);
+    return floor(height / FLOOR) * FLOOR + SHOP + 0.9;
+}
+// A street lamp's head for a street cell: lamps alternate sides along the street.
+vec3 lamp_head(ivec2 cell, bool along_z)
+{
+    int index = along_z ? cell.y : cell.x;
+    float side = (index & 1) == 0 ? 1.0 : -1.0;
+    vec2 base = (vec2(cell) + 0.5) * CELL;
+    vec2 across = along_z ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    vec2 head = base - across * side * 2.0;
+    return vec3(head.x, 7.3, head.y);
+}
+// Cars keep to lanes on streets along x: the car nearest to x on a lane, as centre, present and hash.
+vec3 car_at(float x, int street, int lane, float time)
+{
+    const float period = 2.0 * CELL;
+    float speed = lane == 0 ? 9.0 : -11.0;
+    float slot = floor((x - speed * time) / period + 0.5);
+    vec2 h = hash2(ivec2(int(slot) + lane * 7919, street));
+    return vec3(slot * period + speed * time, h.x < 0.55 ? 1.0 : 0.0, h.y);
+}
+float tram_at(float z, int track, float time)   // the centre of the tram nearest to z
+{
+    const float period = 312.0;
+    float speed = track == 0 ? 12.0 : -10.0, phase = track == 0 ? 0.0 : 140.0;
+    return (floor((z - phase - speed * time) / period + 0.5)) * period + phase + speed * time;
+}
+float wheel_angle(float time) { return time * WHEEL_RATE; }
+vec3 gondola(int k, float time)
+{
+    float a = wheel_angle(time) + float(k) * (2.0 * PI / 16.0);
+    return HUB + vec3(WHEEL_R * cos(a), WHEEL_R * sin(a) - 1.9, 0.0);
+}
+
+// ---- Thin patterns on planes: 1 where there is material.
+float chain_link(vec2 q)   // q in metres on the fence plane, y up
+{
+    float s = 0.11, w = 0.075;
+    float mesh = min(abs(fract((q.x + q.y) / s) - 0.5), abs(fract((q.x - q.y) / s) - 0.5));
+    float post = abs(fract(q.x / 3.0) - 0.5);
+    return (mesh < w || post > 0.488 || q.y > 2.32 || q.y < 0.06) ? 1.0 : 0.0;
+}
+float tower_lattice(float a, float y, float w)   // a in [-1, 1] across a face of half-width w
+{
+    const float girder = 6.0;
+    float b = fract(y / girder);
+    float n = clamp(floor(w / 2.6 + 0.5), 1.0, 4.0);
+    float local = fract((a * 0.5 + 0.5) * n) * 2.0 - 1.0;
+    float unit = n / w;                               // local units per metre
+    bool leg = abs(a) > 1.0 - 0.5 / w;
+    bool beam = b * girder < 0.22;
+    bool brace = abs(local - (2.0 * b - 1.0)) < 0.16 * unit || abs(local + (2.0 * b - 1.0)) < 0.16 * unit;
+    bool post = abs(local) > 1.0 - 0.09 * unit;
+    return (leg || beam || brace || post) ? 1.0 : 0.0;
+}
+
+void trace_tower(vec3 o, vec3 d, vec3 inv, float time)
+{
+    float t; vec3 n; vec2 n2;
+    float reach = TOWER_BASE + 2.5;
+    if (!touches_box(o, inv, TOWER - vec3(reach, 0.0, reach), TOWER + vec3(reach, TOWER_H + MAST + 2.0, reach))) return;
+    float slope = (TOWER_BASE - TOWER_TOP) / TOWER_H;
+    for (int k = 0; k < 4; ++k) {
+        vec3 e = k == 0 ? vec3(1, 0, 0) : k == 1 ? vec3(0, 0, 1) : k == 2 ? vec3(-1, 0, 0) : vec3(0, 0, -1);
+        vec3 f = vec3(-e.z, 0.0, e.x);
+        float denom = dot(d, e) + slope * d.y;
+        t = (TOWER_BASE - dot(o - TOWER, e) - slope * o.y) / (abs(denom) < 1e-6 ? 1e-6 : denom);
+        vec3 q = o + d * t - TOWER;
+        float w = TOWER_BASE - slope * q.y, a = dot(q, f) / w;
+        if (t > 0.0 && q.y > 0.0 && q.y < TOWER_H && abs(a) <= 1.0 && tower_lattice(a, q.y, w) > 0.5)
+            take(t, TOWER_ID, normalize(e + vec3(0.0, slope, 0.0)), ivec2(0), vec4(q.y, a, 0.0, 0.0));
+    }
+    for (int k = 0; k < 2; ++k) {     // the two decks
+        float y = k == 0 ? 40.0 : 82.0, w = TOWER_BASE - slope * y + 1.6, tall = k == 0 ? 4.4 : 3.0;
+        if (hit_box(o, inv, TOWER + vec3(-w, y, -w), TOWER + vec3(w, y + tall, w), t, n))
+            take(t, DECK, n, ivec2(k), vec4(y, tall, 0.0, 0.0));
+    }
+    if (hit_circle(o.xz, d.xz, TOWER.xz, 0.28, t, n2) && o.y + d.y * t > TOWER_H - 1.0 && o.y + d.y * t < TOWER_H + MAST)
+        take(t, TOWER_ID, vec3(n2.x, 0.0, n2.y), ivec2(0), vec4(o.y + d.y * t, 0.0, 1.0, 0.0));
+    float t_far;
+    if (hit_sphere(o, d, TOWER + vec3(0.0, TOWER_H + MAST, 0.0), 0.7, t, t_far, n))
+        take(t, BEACON, n, ivec2(0), vec4(0.0));
+}
+
+void trace_wheel(vec3 o, vec3 d, vec3 inv, float time)
+{
+    float t, t_far; vec3 n;
+    vec3 reach = vec3(WHEEL_R + 3.5, WHEEL_R + 3.5, 3.4);
+    if (!touches_box(o, inv, vec3(HUB.x - reach.x, 0.0, HUB.z - reach.z), HUB + reach)) return;
+    float turn = wheel_angle(time), sector = 2.0 * PI / 16.0;
+    for (int k = 0; k < 2; ++k) {     // two rims with their spokes
+        float z = HUB.z + (k == 0 ? -1.3 : 1.3);
+        t = (z - o.z) * inv.z;
+        vec2 v = (o + d * t).xy - HUB.xy;
+        float r = length(v);
+        if (t <= 0.0 || r > WHEEL_R + 0.3) continue;
+        float a = mod(atan(v.y, v.x) - turn + sector * 0.5, sector) - sector * 0.5;
+        float lane = mod(atan(v.y, v.x) - turn + sector * 0.25, sector * 0.5) - sector * 0.25;
+        bool rim = abs(r - WHEEL_R) < 0.24, ring = abs(r - 0.56 * WHEEL_R) < 0.11, hub = r < 1.3;
+        bool spoke = r * abs(sin(a)) < 0.075, stay = r > 0.56 * WHEEL_R && r * abs(sin(lane)) < 0.035;
+        if (rim || ring || hub || spoke || stay) {
+            float lamp = rim && abs(lane) < 0.022 ? 1.0 : 0.0;
+            take(t, WHEEL, vec3(0.0, 0.0, -sign(d.z)), ivec2(k), vec4(r, lamp, floor((atan(v.y, v.x) - turn) / sector), 0.0));
+        }
+    }
+    for (int k = 0; k < 16; ++k)
+        if (hit_sphere(o, d, gondola(k, time), 1.35, t, t_far, n)) take(t, GONDOLA, n, ivec2(k), vec4(0.0));
+    for (int k = 0; k < 4; ++k) {     // the legs
+        vec3 top = HUB + vec3(0.0, 0.0, k < 2 ? -2.2 : 2.2);
+        vec3 foot = vec3(HUB.x + ((k & 1) == 0 ? -10.0 : 10.0), 0.0, top.z + (k < 2 ? -1.0 : 1.0));
+        if (hit_rod(o, d, foot, top, 0.32, t, n)) take(t, TRUNK, n, ivec2(1), vec4(0.0));
+    }
+    if (hit_rod(o, d, HUB - vec3(0.0, 0.0, 2.4), HUB + vec3(0.0, 0.0, 2.4), 0.8, t, n)) take(t, TRUNK, n, ivec2(1), vec4(0.0));
+}
+
+void trace_lot(vec3 o, vec3 d, vec3 inv, ivec2 cell, float time)
+{
+    float t, t_far; vec3 n; vec2 n2;
+    vec2 h = hash2(cell), corner = vec2(cell) * CELL, centre = corner + 0.5 * CELL;
+    int kind = lot_kind(cell, h);
+    if (kind == LOT_BUILDING) {
+        float height = lot_height(cell, h);
+        vec3 lo = vec3(corner.x + INSET, 0.0, corner.y + INSET), hi = vec3(corner.x + CELL - INSET, height, corner.y + CELL - INSET);
+        if (hit_box(o, inv, lo, hi, t, n)) take(t, BUILDING, n, cell, vec4(height, 0.0, 0.0, 0.0));
+        vec2 extra = hash2(cell + ivec2(977, 131));
+        float top = height;
+        if (extra.x > 0.45 && height > 30.0) {   // a setback storey block
+            top = height + floor(0.22 * height / FLOOR) * FLOOR;
+            if (hit_box(o, inv, vec3(lo.x + 2.4, height, lo.z + 2.4), vec3(hi.x - 2.4, top, hi.z - 2.4), t, n))
+                take(t, BUILDING, n, cell, vec4(top, height, 0.0, 0.0));
+        }
+        if (extra.y > 0.5) {                     // an antenna
+            vec2 at = centre + (extra - 0.5) * 3.0;
+            if (hit_circle(o.xz, d.xz, at, 0.055, t, n2) && o.y + d.y * t > top && o.y + d.y * t < top + 5.0 + 9.0 * extra.x)
+                take(t, ANTENNA, vec3(n2.x, 0.0, n2.y), cell, vec4(top, 0.0, 0.0, 0.0));
+        }
+    } else if (kind == LOT_PARK) {
+        vec2 lo = corner + 0.5, hi = corner + CELL - 0.5;
+        for (int k = 0; k < 4; ++k) {            // a chain-link fence around the lot
+            bool on_x = k < 2;
+            float plane = on_x ? (k == 0 ? lo.x : hi.x) : (k == 2 ? lo.y : hi.y);
+            t = on_x ? (plane - o.x) * inv.x : (plane - o.z) * inv.z;
+            vec3 q = o + d * t;
+            float along = on_x ? q.z : q.x, from = on_x ? lo.y : lo.x, to = on_x ? hi.y : hi.x;
+            if (t > 0.0 && q.y > 0.0 && q.y < 2.4 && along > from && along < to && chain_link(vec2(along - from, q.y)) > 0.5)
+                take(t, FENCE, on_x ? vec3(-sign(d.x), 0.0, 0.0) : vec3(0.0, 0.0, -sign(d.z)), cell, vec4(0.0));
+        }
+        vec3 crown = vec3(centre.x, 6.0, centre.y);  // a tree whose crown lets rays through
+        if (hit_circle(o.xz, d.xz, centre, 0.24, t, n2) && o.y + d.y * t > 0.0 && o.y + d.y * t < 4.0)
+            take(t, TRUNK, vec3(n2.x, 0.0, n2.y), ivec2(0), vec4(0.0));
+        if (hit_sphere(o, d, crown, 3.4, t, t_far, n)) {
+            vec3 q = o + d * t;
+            ivec3 leaf = ivec3(floor(q / 0.13));
+            if (hash1(leaf.xy + leaf.z * 57) < 0.7) {
+                take(t, TREE, n, cell, vec4(hash1(leaf.xz + leaf.y * 31), 0.0, 0.0, 0.0));
+            } else {
+                q = o + d * t_far;
+                leaf = ivec3(floor(q / 0.13));
+                if (hash1(leaf.xy + leaf.z * 57) < 0.7)
+                    take(t_far, TREE, -(q - crown) / 3.4, cell, vec4(hash1(leaf.xz + leaf.y * 31) * 0.5, 0.0, 0.0, 0.0));
+            }
+        }
+    } else if (kind == LOT_SIGN) {
+        int forced = forced_sign(cell);
+        int facing = forced >= 0 ? 3 : int(h.y * 4.0);            // 0: +x, 1: +z, 2: -x, 3: -z
+        int content = forced >= 0 ? forced : int(h.y * 16.0) % 4;
+        bool on_x = (facing & 1) == 0;
+        vec3 half_size = on_x ? vec3(0.15, 2.5, 5.0) : vec3(5.0, 2.5, 0.15);
+        vec3 middle = vec3(centre.x, 8.5, centre.y);
+        if (hit_box(o, inv, middle - half_size, middle + half_size, t, n)) {
+            vec3 q = o + d * t - middle;
+            vec3 front = facing == 0 ? vec3(1, 0, 0) : facing == 1 ? vec3(0, 0, 1) : facing == 2 ? vec3(-1, 0, 0) : vec3(0, 0, -1);
+            float u = facing == 0 ? -q.z : facing == 1 ? q.x : facing == 2 ? q.z : -q.x;
+            take(t, SIGN, n, cell, vec4(u / 10.0 + 0.5, 0.5 - q.y / 5.0, dot(n, front) > 0.5 ? float(content) : -1.0, 0.0));
+        }
+        for (int k = 0; k < 2; ++k) {
+            vec2 at = centre + (on_x ? vec2(0.0, k == 0 ? -3.5 : 3.5) : vec2(k == 0 ? -3.5 : 3.5, 0.0));
+            if (hit_circle(o.xz, d.xz, at, 0.17, t, n2) && o.y + d.y * t > 0.0 && o.y + d.y * t < 6.0)
+                take(t, TRUNK, vec3(n2.x, 0.0, n2.y), ivec2(1), vec4(0.0));
+        }
+    }
+}
+
+void trace_street(vec3 o, vec3 d, vec3 inv, ivec2 cell, bool along_z, bool along_x, float time)
+{
+    float t; vec3 n; vec2 n2;
+    vec2 corner = vec2(cell) * CELL, centre = corner + 0.5 * CELL;
+    if (along_z != along_x) {   // between crossings: a lamp, and wires or a string of lights
+        vec3 head = lamp_head(cell, along_z);
+        vec2 across = along_z ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+        float side = sign(dot(centre - head.xz, across));
+        vec2 foot = head.xz - across * side * 1.9;
+        if (hit_circle(o.xz, d.xz, foot, 0.085, t, n2) && o.y + d.y * t > 0.0 && o.y + d.y * t < 7.55)
+            take(t, LAMP, vec3(n2.x, 0.0, n2.y), cell, vec4(0.0));
+        vec3 arm_lo = vec3(min(foot.x, head.x) - 0.04, 7.42, min(foot.y, head.z) - 0.04);
+        vec3 arm_hi = vec3(max(foot.x, head.x) + 0.04, 7.5, max(foot.y, head.z) + 0.04);
+        if (hit_box(o, inv, arm_lo, arm_hi, t, n)) take(t, LAMP, n, cell, vec4(0.0));
+        vec3 shade = along_z ? vec3(0.34, 0.07, 0.16) : vec3(0.16, 0.07, 0.34);
+        if (hit_box(o, inv, head - shade, head + shade, t, n)) take(t, LAMP_HEAD, n, cell, vec4(0.0));
+    }
+    if (along_z && cell.x == 0) {   // the avenue: two contact wires and a tram on each track
+        for (int k = 0; k < 2; ++k) {
+            float x = corner.x + (k == 0 ? 4.4 : 7.6);
+            if (hit_circle(o.xy, d.xy, vec2(x, 5.7), 0.016, t, n2) && o.z + d.z * t >= corner.y && o.z + d.z * t < corner.y + CELL)
+                take(t, WIRE, vec3(n2.x, n2.y, 0.0), cell, vec4(0.0));
+            float z = tram_at(centre.y, k, time);
+            if (hit_box(o, inv, vec3(x - 1.25, 0.35, z - 15.0), vec3(x + 1.25, 3.55, z + 15.0), t, n))
+                take(t, TRAM, n, ivec2(k), vec4(z, 0.0, 0.0, 0.0));
+        }
+        if (!along_x && hit_circle(o.zy, d.zy, vec2(centre.y, 6.1), 0.012, t, n2) &&   // the span wire at each lamp
+            o.x + d.x * t > corner.x + 2.2 && o.x + d.x * t < corner.x + 9.8)
+            take(t, WIRE, vec3(0.0, n2.y, n2.x), cell, vec4(0.0));
+    } else if (along_z && !along_x && hash1(ivec2(cell.x, 4242)) > 0.35) {   // a string of lights across the street
+        t = (centre.y - o.z) * inv.z;
+        vec3 q = o + d * t;
+        float s = (q.x - corner.x - 0.8) / (CELL - 1.6);
+        float drop = q.y - (7.0 - 3.4 * s * (1.0 - s));
+        if (t > 0.0 && s > 0.0 && s < 1.0) {
+            float bead = (fract(q.x / 0.62) - 0.5) * 0.62;
+            if (bead * bead + (drop + 0.08) * (drop + 0.08) < 0.0036)
+                take(t, BULB, vec3(0.0, 0.0, -sign(d.z)), cell, vec4(floor(q.x / 0.62), 0.0, 0.0, 0.0));
+            else if (abs(drop) < 0.013)
+                take(t, WIRE, vec3(0.0, 0.0, -sign(d.z)), cell, vec4(0.0));
+        }
+    }
+    if (along_x) {              // traffic
+        for (int lane = 0; lane < 2; ++lane) {
+            vec3 car = car_at(centre.x, cell.y, lane, time);
+            float z = corner.y + (lane == 0 ? 7.6 : 4.4);
+            if (car.y < 0.5) continue;
+            if (hit_box(o, inv, vec3(car.x - 2.2, 0.22, z - 0.9), vec3(car.x + 2.2, 0.98, z + 0.9), t, n))
+                take(t, CAR, n, ivec2(lane, cell.y), vec4(car.x, z, car.z, 0.0));
+            if (hit_box(o, inv, vec3(car.x - 1.15, 0.98, z - 0.8), vec3(car.x + 1.0, 1.5, z + 0.8), t, n))
+                take(t, CAR, n, ivec2(lane, cell.y), vec4(car.x, z, car.z, 1.0));
+        }
+    }
+}
+
+// Fills the hit for one ray: the landmarks, then cell by cell across the plan, front to back.
+void trace(vec3 o, vec3 d, float time)
+{
+    g_t = 1e9; g_id = SKY; g_n = vec3(0.0, 1.0, 0.0); g_cell = ivec2(0); g_aux = vec4(0.0);
+    vec3 inv = 1.0 / mix(d, vec3(1e-6), lessThan(abs(d), vec3(1e-6)));
+    if (d.y < 0.0) take(-o.y * inv.y, GROUND, vec3(0.0, 1.0, 0.0), ivec2(0), vec4(0.0));
+    trace_tower(o, d, inv, time);
+    trace_wheel(o, d, inv, time);
+    float start = o.y > TALLEST ? (d.y < 0.0 ? (TALLEST - o.y) * inv.y : 1e9) : 0.0;
+    vec2 at = (o.xz + d.xz * start) / CELL;
+    ivec2 cell = ivec2(floor(at)), dir = ivec2(sign(d.xz));
+    vec2 step_t = abs(inv.xz) * CELL;
+    vec2 next = start + (vec2(cell) + max(vec2(dir), 0.0) - at) * inv.xz * CELL;
+    float enter = start;
+    for (int i = 0; i < 160 && enter < min(g_t, REACH); ++i) {
+        float leave = min(next.x, next.y);
+        if (o.y + d.y * (d.y < 0.0 ? enter : leave) < TALLEST) {
+            ivec2 m = cell - 5 * block_of(cell);
+            if (m.x == 0 || m.y == 0) trace_street(o, d, inv, cell, m.x == 0, m.y == 0, time);
+            else trace_lot(o, d, inv, cell, time);
+        } else if (d.y >= 0.0) {
+            break;
+        }
+        if (next.x < next.y) { cell.x += dir.x; next.x += step_t.x; } else { cell.y += dir.y; next.y += step_t.y; }
+        enter = leave;
+    }
+    if (g_t > REACH) { g_t = 1e9; g_id = SKY; }
+}
+
+// ---- Light and materials.
+vec3 sky(vec3 d)
+{
+    float up = max(d.y, 0.0);
+    float west = pow(max(dot(normalize(vec3(d.x, 0.0, d.z) + 1e-5), WEST), 0.0), 3.0);
+    vec3 horizon = mix(vec3(0.06, 0.09, 0.19), vec3(1.15, 0.40, 0.11), west);
+    vec3 color = mix(horizon, vec3(0.005, 0.012, 0.045), 1.0 - exp(-4.0 * up));
+    color += vec3(0.9, 0.35, 0.2) * west * exp(-14.0 * up) * 0.6;
+    vec3 moon = normalize(vec3(0.55, 0.42, 0.72));
+    color += vec3(5.0, 5.2, 5.6) * smoothstep(0.99962, 0.99972, dot(d, moon));
+    if (d.y > 0.12) {            // stars on a grid of directions
+        vec2 grid = vec2(atan(d.z, d.x), asin(d.y)) * 140.0;
+        vec2 cell = floor(grid), in_cell = grid - cell - 0.5;
+        vec2 h = hash2(ivec2(cell));
+        float star = h.x > 0.985 ? exp(-dot(in_cell, in_cell) * 60.0) : 0.0;
+        color += star * (0.6 + 2.4 * h.y) * smoothstep(0.12, 0.3, d.y);
+    }
+    return color;
+}
+vec3 ambient(vec3 n)
+{
+    vec3 dome = mix(vec3(0.020, 0.018, 0.016), vec3(0.040, 0.055, 0.11), n.y * 0.5 + 0.5);
+    return dome + vec3(0.40, 0.15, 0.045) * max(dot(n, WEST), 0.0) * (0.35 + 0.65 * (1.0 - abs(n.y)));
+}
+float coverage(ivec2 q)
+{
+    q = clamp(q, ivec2(0), ivec2(SIGN_W - 1, SIGN_H - 1));
+    int i = q.y * SIGN_W + q.x;
+    return float((signs[i >> 2] >> uint((i & 3) * 8)) & 255u) * (1.0 / 255.0);
+}
+float sign_text(int tile, vec2 uv)
+{
+    vec2 q = (vec2(tile & 1, tile >> 1) + clamp(uv, 0.001, 0.999)) * vec2(2048.0, 1024.0) - 0.5;
+    ivec2 i = ivec2(floor(q));
+    vec2 f = q - vec2(i);
+    return mix(mix(coverage(i), coverage(i + ivec2(1, 0)), f.x), mix(coverage(i + ivec2(0, 1)), coverage(i + ivec2(1, 1)), f.x), f.y);
+}
+// The resolution chart: a star of 72 spokes, line pairs that get finer, and a checker.
+float chart(vec2 uv)
+{
+    vec2 q = vec2(uv.x * 2.0, uv.y);                 // the sign is 2:1
+    vec2 star = q - vec2(0.5, 0.5);
+    if (length(star) < 0.46) return length(star) < 0.012 ? 0.0 : step(0.0, sin(atan(star.y, star.x) * 72.0));
+    if (q.x > 1.02 && q.x < 1.96 && q.y > 0.06 && q.y < 0.94) {
+        float column = floor((q.x - 1.02) / 0.1175), row = q.y < 0.5 ? 0.0 : 1.0;
+        float pitch = 0.032 * exp2(-(column + row * 8.0) * 0.5);   // metres: x5 on the 5 m sign
+        vec2 local = vec2(q.x - 1.02 - column * 0.1175, q.y - (row == 0.0 ? 0.06 : 0.52));
+        if (local.x > 0.1 || local.y > 0.42) return 1.0;
+        return local.y < 0.2 ? step(0.5, fract(local.x / pitch)) : local.y > 0.22 ? step(0.5, fract(local.y / pitch)) : 1.0;
+    }
+    return 1.0;
+}
+
+// A facade point: u along the wall, v up from the building's base. Sets albedo, glow and glass (0 to 1).
+void facade(vec2 uv, ivec2 cell, vec3 n, out vec3 albedo, out vec3 glow, out float glass)
+{
+    vec2 h = hash2(cell + ivec2(31, 17));
+    int style = int(h.x * 4.0);
+    vec3 wall = mix(vec3(0.10, 0.10, 0.11), vec3(0.30, 0.28, 0.26), h.y);
+    albedo = wall; glow = vec3(0.0); glass = 0.0;
+    int salt = cell.x * 131 + cell.y * 7919 + int(n.x * 3.0 + n.z * 5.0);
+    if (uv.y < SHOP) {                                   // shop fronts and a lit sign band
+        float bay = fract(uv.x / 5.25);
+        vec2 shop = hash2(ivec2(int(floor(uv.x / 5.25)) + salt, 77));
+        if (uv.y > 2.95) {                               // a dark fascia with a line of neon
+            albedo = vec3(0.035);
+            if (shop.x > 0.3 && abs(uv.y - 3.27) < 0.07 && abs(bay - 0.5) < 0.42)
+                glow = mix(hue(shop.y), vec3(1.0), 0.25) * 2.2;
+        } else if (bay > 0.07 && bay < 0.93 && uv.y > 0.35) {
+            glass = 1.0;
+            albedo = vec3(0.02);
+            float pane = abs(fract(bay * 3.0) - 0.5);
+            if (pane > 0.485 || abs(uv.y - 2.25) < 0.025) { glass = 0.0; albedo = vec3(0.03); }
+            else if (shop.x > 0.25)                      // lit from the ceiling inside
+                glow = mix(vec3(1.0, 0.76, 0.48), vec3(0.72, 0.88, 1.0), step(0.8, shop.y)) *
+                       (0.05 + 0.30 * smoothstep(0.3, 2.95, uv.y)) * (0.6 + 0.8 * shop.y);
+        }
+        return;
+    }
+    float v = uv.y - SHOP, level = floor(v / FLOOR), fv = fract(v / FLOOR);
+    float pitch = style == 0 ? 3.0 : style == 1 ? 1.5 : style == 2 ? 3.0 : 2.4;
+    float column = floor(uv.x / pitch), fu = fract(uv.x / pitch);
+    vec2 room = hash2(ivec2(int(column) + salt, int(level) + salt * 3));
+    bool lit = room.x < (style == 3 ? 0.30 : 0.22);
+    vec3 lamp = mix(vec3(1.0, 0.72, 0.42), vec3(0.72, 0.86, 1.0), step(0.78, room.y)) * (0.10 + 0.60 * room.y * room.y);
+    bool window = false;
+    if (style == 0) {            // an office grid with a thin mullion in each window
+        window = fu > 0.1 && fu < 0.9 && fv > 0.24 && fv < 0.86 && abs(fu - 0.5) > 0.011;
+    } else if (style == 1) {     // a curtain wall: glass between thin bars, an opaque band at each floor
+        window = fu > 0.03 && fu < 0.97 && fv > 0.2;
+        if (!window) albedo = vec3(0.045, 0.05, 0.06);
+        lit = hash1(ivec2(int(floor(uv.x / 6.0)) + salt, int(level) - salt)) < 0.24;
+    } else if (style == 2) {     // louvres: fins every half metre in front of the glass
+        window = fv > 0.16 && fv < 0.9 && fract(uv.x / 0.5) > 0.36;
+        lit = hash1(ivec2(salt, int(level))) < 0.3;
+        lamp = vec3(1.0, 0.8, 0.55) * 0.4;
+    } else {                     // brick with small windows and balcony bars
+        float course = floor(uv.y / 0.085);
+        bool mortar = fract(uv.x / 0.24 + 0.5 * mod(course, 2.0)) < 0.055 || fract(uv.y / 0.085) < 0.15;
+        albedo = mortar ? vec3(0.32, 0.30, 0.27) : mix(vec3(0.22, 0.075, 0.045), vec3(0.30, 0.12, 0.07), hash1(ivec2(int(uv.x / 0.24 + 0.5 * mod(course, 2.0)), int(course))));
+        window = fu > 0.28 && fu < 0.72 && fv > 0.3 && fv < 0.82;
+        if (fu > 0.2 && fu < 0.8 && fv > 0.02 && fv < 0.3 && room.y > 0.4) {   // balcony
+            window = false;
+            albedo = (fract(uv.x / 0.11) < 0.3 || fv > 0.27) ? vec3(0.02) : albedo * 0.55;
+        }
+    }
+    if (window) {
+        glass = 1.0;
+        albedo = vec3(0.02);
+        if (lit) {
+            float blind = room.y > 0.55 && room.y < 0.75 ? 0.35 + 0.65 * step(0.5, fract(v / 0.075)) : 1.0;
+            glow = lamp * blind * (0.55 + 0.45 * fv);
+        }
+    }
+}
+
+// The ground at a point: albedo, shine (0 to 1) and whether it is the street.
+void ground(vec2 q, float time, out vec3 albedo, out float shine, out bool street, out ivec2 cell, out bool along_z)
+{
+    cell = ivec2(floor(q / CELL));
+    ivec2 m = cell - 5 * block_of(cell);
+    vec2 in_cell = q - vec2(cell) * CELL;
+    street = m.x == 0 || m.y == 0;
+    along_z = m.x == 0;
+    float grain = hash1(ivec2(floor(q / 0.05)));
+    shine = 0.0;
+    if (!street) {
+        int kind = lot_kind(cell, hash2(cell));
+        if (kind == LOT_PLAZA || kind == LOT_SQUARE || (kind == LOT_SIGN && block_of(cell) == SQUARE)) {
+            vec2 tile = fract(q / 1.2);
+            float ring = kind == LOT_PLAZA ? fract(length(q - TOWER.xz) / 2.4) : 1.0;
+            albedo = (tile.x < 0.018 || tile.y < 0.018 || ring < 0.03) ? vec3(0.05) : vec3(0.24, 0.23, 0.22) * (0.85 + 0.3 * grain);
+            shine = 0.25;
+        } else if (kind == LOT_PARK || kind == LOT_WHEEL) {
+            albedo = vec3(0.035, 0.085, 0.03) * (0.6 + 0.8 * grain) * (0.85 + 0.15 * step(0.5, fract(q.x / 1.6)));
+        } else {
+            albedo = vec3(0.12) * (0.8 + 0.4 * grain);
+        }
+        return;
+    }
+    bool crossing = m.x == 0 && m.y == 0;
+    float across = along_z ? in_cell.x : in_cell.y, along = along_z ? q.y : q.x;
+    int along_m = along_z ? m.y : m.x;
+    float along_in = along_z ? in_cell.y : in_cell.x;
+    if (!crossing && (across < 2.5 || across > 9.5)) {          // pavement
+        vec2 tile = fract(q / 0.6);
+        bool kerb = across > 2.3 && across < 9.7;
+        albedo = kerb ? vec3(0.34) : (tile.x < 0.03 || tile.y < 0.03) ? vec3(0.07) : vec3(0.20, 0.195, 0.19) * (0.85 + 0.3 * grain);
+        shine = 0.15;
+        return;
+    }
+    albedo = vec3(0.028) * (0.7 + 0.6 * grain);
+    shine = 0.75;
+    vec3 paint = vec3(0.62, 0.61, 0.56);
+    if (crossing) return;
+    if (abs(across - 6.0) < 0.07 && fract(along / 6.0) < 0.5 && !(along_z && cell.x == 0)) albedo = paint;
+    if (abs(across - 2.95) < 0.05 || abs(across - 9.05) < 0.05) albedo = paint;
+    bool zebra = (along_m == 1 && along_in < 3.2 && along_in > 0.6) || (along_m == 4 && along_in > CELL - 3.2 && along_in < CELL - 0.6);
+    if (zebra && across > 3.0 && across < 9.0 && fract(across / 0.9) < 0.5) albedo = paint;
+    if (along_z && cell.x == 0) {                             // tram rails
+        float rail = min(min(abs(across - 3.68), abs(across - 5.12)), min(abs(across - 6.88), abs(across - 8.32)));
+        if (rail < 0.035) { albedo = vec3(0.45, 0.46, 0.5); shine = 1.0; }
+    }
+}
+
+// Sodium light from the lamps of a street cell and its two neighbours along the street.
+vec3 lamp_light(vec3 q, vec3 n, vec3 reflected, ivec2 cell, bool along_z, float shine)
+{
+    vec3 sum = vec3(0.0);
+    for (int k = -1; k <= 1; ++k) {
+        ivec2 c = cell + (along_z ? ivec2(0, k) : ivec2(k, 0));
+        ivec2 m = c - 5 * block_of(c);
+        if (m.x == 0 && m.y == 0) continue;
+        vec3 to = lamp_head(c, along_z) - q;
+        float d2 = dot(to, to);
+        vec3 l = to * inversesqrt(d2);
+        sum += vec3(1.0, 0.60, 0.26) * (38.0 * max(dot(n, l), 0.0) / (d2 + 6.0) +
+                                        shine * 14.0 * pow(max(dot(reflected, l), 0.0), 260.0));
+    }
+    return sum;
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    vec2 size = p.frame.zw;
+    if (pixel.x >= int(size.x) || pixel.y >= int(size.y)) return;
+    Camera cam = camera(p.eye, p.view), before = camera(p.prev_eye, p.prev_view);
+    float time = p.eye.w, elapsed = p.eye.w - p.prev_eye.w;
+    // FidelityFX convention: the projection is offset by +jitter, so a pixel samples centre - jitter.
+    vec2 sample_uv = (vec2(pixel) + 0.5 - p.frame.xy) / size;
+    vec2 ndc = vec2(sample_uv.x * 2.0 - 1.0, 1.0 - sample_uv.y * 2.0);
+    vec3 dir = normalize(cam.forward + cam.right * ndc.x * cam.tan_half * size.x / size.y + cam.up * ndc.y * cam.tan_half);
+    trace(cam.origin, dir, time);
+
+    vec3 color, hit = cam.origin + dir * g_t, n = g_n, was = hit;
+    float depth = 1.0;
+    if (g_id == SKY) {
+        color = sky(dir);
+        hit = was = cam.origin + dir * FAR;
+        was += before.origin - cam.origin;   // the sky does not shift when the camera moves
+    } else {
+        vec3 albedo = vec3(0.2), glow = vec3(0.0), reflected = reflect(dir, n);
+        float shine = 0.0, shade = 1.0;
+        vec3 street_light = vec3(0.0);
+        if (g_id == GROUND) {
+            bool street, along_z; ivec2 cell;
+            ground(hit.xz, time, albedo, shine, street, cell, along_z);
+            if (street) street_light = lamp_light(hit, n, reflected, cell, along_z, shine);
+            shade = 0.8;
+        } else if (g_id == BUILDING) {
+            if (n.y > 0.5) {
+                albedo = vec3(0.09, 0.09, 0.10) * (0.7 + 0.6 * hash1(ivec2(floor(hit.xz / 0.07))));
+            } else {
+                float u = abs(n.x) > 0.5 ? hit.z : hit.x, base = g_aux.y;
+                float glass;
+                facade(vec2(u, base > 0.0 ? hit.y - base + SHOP : hit.y), g_cell, n, albedo, glow, glass);
+                shine = glass;
+                shade = mix(0.45, 1.0, smoothstep(0.0, 28.0, hit.y));
+            }
+        } else if (g_id == ANTENNA || g_id == LAMP || g_id == TRUNK) {
+            albedo = g_id == TRUNK && g_cell.x == 0 ? vec3(0.09, 0.06, 0.04) : vec3(0.11, 0.115, 0.12);
+        } else if (g_id == LAMP_HEAD) {
+            albedo = vec3(0.05);
+            if (n.y < -0.5) glow = vec3(1.0, 0.62, 0.28) * 12.0;
+        } else if (g_id == WIRE) {
+            albedo = vec3(0.035);
+        } else if (g_id == BULB) {
+            glow = mix(vec3(1.0, 0.72, 0.36), hue(hash1(ivec2(int(g_aux.x), g_cell.y))), 0.55) * 5.0;
+        } else if (g_id == CAR) {
+            float forward = g_cell.x == 0 ? 1.0 : -1.0;
+            vec3 local = vec3((hit.x - g_aux.x) * forward, hit.y, hit.z - g_aux.y);
+            albedo = mix(vec3(0.04), hue(g_aux.z * 7.0) * 0.5 + 0.06, step(0.35, fract(g_aux.z * 13.0)));
+            shine = 0.5;
+            if (g_aux.w > 0.5 && abs(n.y) < 0.5 && local.y < 1.44 && abs(abs(local.z) - 0.8) > 0.0 &&
+                fract(local.x / 1.08 + 0.52) > 0.07) { albedo = vec3(0.01); shine = 1.0; }
+            float lamp = g_aux.w > 0.5 ? 1.0 : length(vec2(abs(local.z) - 0.6, local.y - 0.72));
+            if (n.x * forward > 0.5 && lamp < 0.14) glow = vec3(1.0, 0.95, 0.85) * 14.0;
+            if (n.x * forward < -0.5 && lamp < 0.12) glow = vec3(1.0, 0.04, 0.02) * 3.5;
+            was.x -= (g_cell.x == 0 ? 9.0 : -11.0) * elapsed;
+        } else if (g_id == TRAM) {
+            float along = hit.z - g_aux.x, forward = g_cell.x == 0 ? 1.0 : -1.0;
+            albedo = hit.y < 1.25 ? vec3(0.62, 0.08, 0.05) : vec3(0.55, 0.53, 0.48);
+            shine = 0.4;
+            bool joint = abs(abs(along) - 5.0) < 0.22;
+            if (joint) albedo = vec3(0.015);
+            if (abs(n.x) > 0.5 && hit.y > 1.5 && hit.y < 2.9 && !joint && fract(along / 1.25) > 0.1 && abs(along) < 14.2) {
+                albedo = vec3(0.01); shine = 1.0;
+                glow = vec3(1.0, 0.86, 0.62) * 0.7;
+            }
+            if (n.z * forward > 0.5 && hit.y > 1.5 && hit.y < 2.9) { albedo = vec3(0.01); shine = 1.0; glow = vec3(0.9, 0.8, 0.6) * 0.5; }
+            if (n.z * forward > 0.5 && length(vec2(abs(hit.x - (g_cell.x == 0 ? 4.4 : 7.6)) - 0.75, hit.y - 0.95)) < 0.14)
+                glow = vec3(1.0, 0.95, 0.85) * 14.0;
+            was.z -= (g_cell.x == 0 ? 12.0 : -10.0) * elapsed;
+        } else if (g_id == FENCE) {
+            albedo = vec3(0.30, 0.31, 0.33);
+        } else if (g_id == TREE) {
+            albedo = vec3(0.03, 0.10, 0.03) * (0.4 + 1.2 * g_aux.x);
+        } else if (g_id == SIGN) {
+            int content = int(g_aux.z + 0.5);
+            albedo = vec3(0.03);
+            if (g_aux.z < -0.5) {
+                albedo = (fract(g_aux.x * 10.0) < 0.04 || fract(g_aux.y * 5.0) < 0.06) ? vec3(0.10) : vec3(0.03);
+            } else if (content == 4) {
+                glow = vec3(0.95) * chart(g_aux.xy);
+            } else {
+                float text = step(0.5, sign_text(content, g_aux.xy));
+                if (content == 0) glow = mix(vec3(0.004, 0.006, 0.02), vec3(0.75, 0.9, 1.0) * 2.4, text);
+                else if (content == 1) glow = vec3(0.92, 0.88, 0.8) * (1.0 - text);
+                else if (content == 2) glow = hue(floor(g_aux.y * 4.0) * 0.23 + 0.02) * 2.6 * text + vec3(0.004);
+                else glow = mix(vec3(0.006, 0.004, 0.002), vec3(1.0, 0.62, 0.2) * 1.7, text);
+            }
+        } else if (g_id == TOWER_ID) {
+            float band = mod(floor(g_aux.x / 12.0), 2.0);
+            albedo = mix(vec3(0.75, 0.74, 0.7), vec3(0.85, 0.16, 0.04), band);
+            glow = albedo * vec3(1.0, 0.55, 0.25) * (0.9 * exp(-g_aux.x / 70.0) + 0.12);   // floodlit from below
+        } else if (g_id == DECK) {
+            float u = abs(n.x) > 0.5 ? hit.z : hit.x, v = (hit.y - g_aux.x) / g_aux.y;
+            albedo = vec3(0.08);
+            if (abs(n.y) < 0.5 && v > 0.3 && v < 0.8 && fract(u / 0.9) > 0.07) { glow = vec3(1.0, 0.85, 0.6) * 0.9; shine = 1.0; }
+        } else if (g_id == BEACON) {
+            glow = vec3(1.0, 0.05, 0.03) * (4.0 + 60.0 * pow(0.5 + 0.5 * sin(time * 2.6), 6.0));
+        } else if (g_id == WHEEL || g_id == GONDOLA) {
+            vec3 centre = HUB;
+            float turned = wheel_angle(p.prev_eye.w) - wheel_angle(time);
+            if (g_id == WHEEL) {
+                albedo = vec3(0.6, 0.6, 0.62);
+                if (g_aux.y > 0.5) glow = hue(g_aux.z / 16.0 + time * 0.05) * 6.0;
+                else glow = vec3(0.5, 0.6, 1.0) * 0.12;
+                vec2 v = hit.xy - centre.xy;
+                was.xy = centre.xy + vec2(v.x * cos(turned) - v.y * sin(turned), v.x * sin(turned) + v.y * cos(turned));
+            } else {
+                albedo = hue(float(g_cell.x) / 16.0) * 0.5 + 0.04;
+                shine = 0.3;
+                if (abs(n.y + 0.1) < 0.28) { albedo = vec3(0.01); glow = vec3(1.0, 0.85, 0.6) * 0.6; shine = 1.0; }
+                was -= gondola(g_cell.x, time) - gondola(g_cell.x, p.prev_eye.w);
+            }
+        }
+        float fresnel = shine * (0.04 + 0.96 * pow(1.0 - max(dot(-dir, n), 0.0), 5.0));
+        color = albedo * (ambient(n) * shade + street_light) + glow + sky(reflected) * fresnel * (g_id == GROUND ? 0.55 : 0.8);
+        float haze = 1.0 - exp(-g_t * 0.0011);
+        color = mix(color, sky(normalize(vec3(dir.x, 0.03, dir.z))) * 0.75, haze);
+        float z = dot(hit - cam.origin, cam.forward);
+        depth = (FAR / (FAR - NEAR)) * (1.0 - NEAR / z);
+    }
+    vec2 motion = project(before, was, size) - project(cam, hit, size);
+    imageStore(color_out, pixel, vec4(color, 1.0));
+#ifndef SCENE_COLOR_ONLY
+    imageStore(depth_out, pixel, vec4(depth));
+    imageStore(motion_out, pixel, vec4(motion, 0.0, 0.0));
+#endif
+}
