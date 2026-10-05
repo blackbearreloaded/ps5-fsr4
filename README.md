@@ -71,6 +71,10 @@ measures less: 2.66 ms for 1280×720 → 1920×1080. For that case AMD's
 converted shaders alone take 3.26 ms on the PS5, and 3.93 ms of GPU time on a
 BC250 at 1850 MHz.
 
+The [showcase app](examples/fsr4_showcase/README.md) runs the same six cases on
+any console: *Benchmark the six scenarios* in its settings times each one and
+shows it beside this table.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/perf/history-dark.svg">
   <img alt="Milliseconds per frame for 1280×720 to 1920×1080 after each optimization step, from 27 ms to 2.67 ms" src="docs/perf/history-light.svg">
