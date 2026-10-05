@@ -50,11 +50,10 @@ class Showcase(unittest.TestCase):
         self.assertIsNone(defaults["param_overrides"].default)
 
     def test_content_version_follows_the_release(self):
-        self.assertEqual(showcase.content_version(None), "01.000.000")
-        self.assertEqual(showcase.content_version("0.2.0"), "01.002.000")
-        self.assertEqual(showcase.content_version("0.10.3"), "01.010.003")
-        self.assertEqual(showcase.content_version("1.0.0"), "02.000.000")
-        self.assertLess(showcase.content_version("0.9.9"), showcase.content_version("0.10.0"))
+        self.assertEqual(showcase.content_version("01.000.000"), "01.000.000")
+        self.assertEqual(showcase.content_version("01.002.010"), "01.002.010")
+        for development in (None, "0.0.0-dev", "1.2.3", "v01.000.000", "1.000.000"):
+            self.assertEqual(showcase.content_version(development), "01.000.000")
 
     def test_scenarios_are_the_readme_performance_table(self):
         text = source()

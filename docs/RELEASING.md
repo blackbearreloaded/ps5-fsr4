@@ -20,7 +20,7 @@ packages a release. A `v*` tag publishes that package as a GitHub pre-release.
 material from AMD's SDK through the BC250 build to this one, BC250's own
 provenance note, and the licenses of everything else in the archive
 (`THIRD-PARTY.md`). `tools/package_fsr4_release.py` writes all of it, and
-`make release VERSION=x.y.z` builds the same assets locally after `make sdk`.
+`make release VERSION=01.000.000` builds the same assets locally after `make sdk`.
 
 ## Inputs
 
@@ -67,7 +67,9 @@ for more than a minute instead of about 0.1 s. To make a new one:
    with `FSR4_SHOWCASE_SELFTEST_DONE`, that every `FSR4_SHOWCASE_OUTPUT` line
    shows a `setup_ms` of about 0.1 s, which means the pipeline cache is used,
    and that the frames it saved look right.
-2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`.
+2. Tag and push. Releases are numbered like PlayStation content versions,
+   which is also what the console reports for the installed showcase:
+   `git tag v01.000.000 && git push origin v01.000.000`.
 3. The workflow builds, tests and packages the tag, then publishes the
    pre-release with the notes `tools/package_fsr4_release.py` writes.
 

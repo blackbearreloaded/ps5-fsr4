@@ -113,12 +113,9 @@ def build_font(out):
 
 
 def content_version(version):
-    """What the console reports for an installed release: 0.Y.Z carries 01.00Y.00Z, 1.Y.Z 02.00Y.00Z."""
-    match = re.match(r"(\d+)\.(\d+)\.(\d+)", version or "")
-    if not match:
-        return "01.000.000"
-    major, minor, patch = map(int, match.groups())
-    return f"{major + 1:02d}.{minor:03d}.{patch:03d}"
+    """What the console reports for an installed build. Releases are numbered like PlayStation
+    content versions (01.000.000) and carry that number; any other build carries 01.000.000."""
+    return version if version and re.fullmatch(r"\d\d\.\d\d\d\.\d\d\d", version) else "01.000.000"
 
 
 def host_build(out, runtime, defines):

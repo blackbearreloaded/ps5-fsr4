@@ -69,7 +69,7 @@ showcase:
 # then points the builds at them.
 inputs:
 	$(PYTHON) tools/fetch_build_inputs.py
-# VERSION=x.y.z, after make sdk: the release assets in build/release (docs/RELEASING.md).
+# VERSION=01.000.000, after make sdk: the release assets in build/release (docs/RELEASING.md).
 release:
 	test -n "$(VERSION)"
 	$(PYTHON) tools/fetch_build_inputs.py --check-cache

@@ -96,7 +96,7 @@ frame adds 1.6 to 1.9 ms.
 ## Download
 
 Every [pre-release](https://github.com/blackbearreloaded/ps5-fsr4/releases)
-after 0.1.0 has `ps5-fsr4-showcase-VERSION-PPSA99011.zip`, built by GitHub
+from 01.000.000 on has `ps5-fsr4-showcase-VERSION-PPSA99011.zip`, built by GitHub
 Actions. Extract it, upload the `PPSA99011` folder to `/data/homebrew/` on a
 PS5 running a homebrew loader with ShadowMountPlus, and start **PS5 FSR4
 Showcase** from the home screen once it is registered. Release 0.1.0 carried
@@ -120,8 +120,9 @@ averaged timings every 120 frames.
 `SHOWCASE_ARGS` passes options to `tools/build_fsr4_showcase.py`:
 
 - `--release VERSION` also writes `ps5-fsr4-showcase-VERSION-PPSA99011.zip`,
-  the package with a README, `notices/` and `SHA256SUMS`, and its SHA-256. The
-  package's content version follows the release: 0.Y.Z carries `01.00Y.00Z`.
+  the package with a README, `notices/` and `SHA256SUMS`, and its SHA-256.
+  Releases are numbered like PlayStation content versions (`01.000.000`), and
+  the package carries that number as its content version.
   The app embeds FSR4 material under AMD's MIT terms, whose notice must stay
   with every copy ([THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md#amd-fsr4-material)).
   `make release VERSION=...` packages the whole release
