@@ -5,6 +5,8 @@ GitHub Actions builds everything from pinned public inputs
 `main` and every pull request builds the driver, the FSR4 runtime, the SDK, the
 demo and the showcase, checks the pipeline cache, runs the host tests and
 packages a release. A `v*` tag publishes that package as a GitHub pre-release.
+Every run keeps the showcase app ZIP as a workflow artifact; a pull request's is
+named by its number and commit ([pull-request builds](PULL_REQUEST_BUILDS.md)).
 
 ## What a release contains
 

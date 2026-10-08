@@ -10,6 +10,8 @@ snd0.at9, made by tools/build_fsr4_showcase_assets.py).
 --host builds an off-screen binary for desktop Vulkan instead: it runs the
 scripted walk and saves a frame of each step (examples/fsr4_showcase/README.md).
 --release VERSION also writes ps5-fsr4-showcase-VERSION-PPSA99011.zip and its .sha256.
+The environment variable BUILD_LABEL names a build that is not a release, such as a pull
+request's: it is written to build-label.txt in the app folder (docs/PULL_REQUEST_BUILDS.md).
 """
 import argparse
 import hashlib
@@ -43,6 +45,26 @@ SHADERS = (("scene", SOURCE / "city.comp", ()),
 FACES = (("title", "DejaVuSans-Bold.ttf", 38), ("body", "DejaVuSans.ttf", 25), ("small", "DejaVuSans.ttf", 19))
 ATLAS_W = 1024
 LOUDNESS_SND0 = "-28.00"  # what ps5-at9-converter normalized snd0.at9 to
+BUILD_LABEL_FILE = "build-label.txt"
+
+
+def build_label(environ=None):
+    """What a build that is not a release calls itself (BUILD_LABEL), such as a pull request's
+    number and commit; empty for a release. Checked before anything is built."""
+    label = (os.environ if environ is None else environ).get("BUILD_LABEL", "")
+    if label and not re.fullmatch(r"[A-Za-z0-9 ,._#-]{1,40}", label):
+        raise SystemExit("BUILD_LABEL must be 1 to 40 letters, digits, spaces or , . _ # -")
+    return label
+
+
+def write_build_label(package, label):
+    """build-label.txt beside eboot.bin says which build this is; a build without a label has
+    none, so an earlier build's file is removed."""
+    path = package / BUILD_LABEL_FILE
+    if label:
+        path.write_text(label + "\n", encoding="ascii", newline="\n")
+    elif path.exists():
+        path.unlink()
 
 
 def glslang():
@@ -172,6 +194,7 @@ def main():
     parser.add_argument("--release", metavar="VERSION", help="Also write the release zip and its SHA-256")
     parser.add_argument("--define", action="append", default=[], metavar="NAME=VALUE", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    label = build_label()
     out = (args.out or ROOT / ("build/fsr4-showcase-host" if args.host else "build/fsr4-showcase")).resolve()
     out.mkdir(parents=True, exist_ok=True)
     compile_shaders(out)
@@ -202,7 +225,9 @@ def main():
                      title_id=TITLE_ID, content_id=CONTENT_ID, sce_sys=SOURCE / "sce_sys",
                      param_overrides=dict(contentVersion=content_version(args.release),
                                 pubtools=dict(loudnessSnd0=LOUDNESS_SND0) if "snd0.at9" in own_assets else {}))
+    write_build_label(out / TITLE_ID, label)
     result = dict(package=str(out / TITLE_ID), pipeline_cache=cache.exists(), selftest=args.selftest,
+                  **(dict(build_label=label) if label else {}),
                   **(dict(diagnose=run) if args.diagnose else {}),
                   launch_assets=own_assets or "generic", font=font)
     if args.release:

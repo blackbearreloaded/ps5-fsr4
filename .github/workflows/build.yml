@@ -3,7 +3,8 @@
 #
 # Builds the driver, the FSR4 runtime, the SDK, the demo and the showcase from
 # pinned public inputs, runs the host tests and packages a release. Every run
-# keeps the showcase app ZIP as a workflow artifact. A v* tag publishes the
+# keeps the showcase app ZIP as a workflow artifact; a pull request's is named by
+# its number and commit (docs/PULL_REQUEST_BUILDS.md). A v* tag publishes the
 # package as a GitHub pre-release; a manual run with a version keeps all of it
 # as a workflow artifact. docs/RELEASING.md has the procedure.
 name: Build
@@ -75,6 +76,24 @@ jobs:
       - name: Host tests
         run: make check
 
+      # A pull request's build is named by its number and its own commit, on the
+      # artifact and in a file in the app folder (docs/PULL_REQUEST_BUILDS.md); the
+      # version stays what it is.
+      - name: Name this build
+        id: label
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ $GITHUB_EVENT_NAME == pull_request ]]; then
+            short=${PR_HEAD:0:7}
+            echo "artifact=${GITHUB_REPOSITORY##*/}-PR$PR_NUMBER-$short" >> "$GITHUB_OUTPUT"
+            echo "BUILD_LABEL=PR $PR_NUMBER, $short" >> "$GITHUB_ENV"
+          else
+            echo "artifact=ps5-fsr4-showcase-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build the demo and the showcase
         run: |
           make demo
@@ -102,7 +121,7 @@ jobs:
       - name: Keep the showcase ZIP
         uses: actions/upload-artifact@v7
         with:
-          name: ps5-fsr4-showcase-${{ github.sha }}
+          name: ${{ steps.label.outputs.artifact }}
           path: build/release/ps5-fsr4-showcase-${{ env.VERSION }}-PPSA99011.zip
           if-no-files-found: error
           compression-level: 0

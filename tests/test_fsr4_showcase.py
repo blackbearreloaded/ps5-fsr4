@@ -55,6 +55,33 @@ class Showcase(unittest.TestCase):
         for development in (None, "0.0.0-dev", "1.2.3", "v01.000.000", "1.000.000"):
             self.assertEqual(showcase.content_version(development), "01.000.000")
 
+    def test_build_label_is_checked_and_written_beside_the_eboot(self):
+        self.assertEqual(showcase.build_label({}), "")
+        self.assertEqual(showcase.build_label({"BUILD_LABEL": ""}), "")
+        for good in ("PR 12, 1ae2fd0", "pacing test 2", "a", "x" * 40, "v1.0_rc-2 #3"):
+            self.assertEqual(showcase.build_label({"BUILD_LABEL": good}), good)
+        for bad in ("x" * 41, "PR 12\n", "a/b", "$(id)", "caf\u00e9", "tab\there", "\"q\""):
+            with self.assertRaises(SystemExit):
+                showcase.build_label({"BUILD_LABEL": bad})
+        with tempfile.TemporaryDirectory() as out:
+            package = Path(out)
+            showcase.write_build_label(package, "")
+            self.assertEqual(list(package.iterdir()), [])  # a release has no such file
+            showcase.write_build_label(package, "PR 12, 1ae2fd0")
+            self.assertEqual((package / "build-label.txt").read_bytes(), b"PR 12, 1ae2fd0\n")
+            showcase.write_build_label(package, "")  # nor a later build in the same folder
+            self.assertEqual(list(package.iterdir()), [])
+
+    def test_pull_request_builds_are_named_by_number_and_commit(self):
+        workflow = (ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8")
+        self.assertIn('echo "artifact=${GITHUB_REPOSITORY##*/}-PR$PR_NUMBER-$short" >> "$GITHUB_OUTPUT"', workflow)
+        self.assertIn('echo "BUILD_LABEL=PR $PR_NUMBER, $short" >> "$GITHUB_ENV"', workflow)
+        self.assertIn('echo "artifact=ps5-fsr4-showcase-$GITHUB_SHA" >> "$GITHUB_OUTPUT"', workflow)
+        self.assertIn("name: ${{ steps.label.outputs.artifact }}", workflow)
+        self.assertIn("PR_HEAD: ${{ github.event.pull_request.head.sha }}", workflow)
+        # A contributor's code is never built with write access or secrets.
+        self.assertNotIn("pull_request_target", workflow)
+
     def test_scenarios_are_the_readme_performance_table(self):
         text = source()
         table = text[text.index("} SCENARIOS[] = {"):text.index("enum { SCENARIO_COUNT")]
