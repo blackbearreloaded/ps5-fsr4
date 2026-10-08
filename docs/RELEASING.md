@@ -26,6 +26,10 @@ provenance note, and the licenses of everything else in the archive
 (`THIRD-PARTY.md`). `tools/package_fsr4_release.py` writes all of it, and
 `make release VERSION=01.000.000` builds the same assets locally after `make sdk`.
 
+The two ZIPs and the source tarball built by the workflow can be checked with
+`gh attestation verify <file> -R blackbearreloaded/ps5-fsr4` (GitHub CLI); this
+covers releases built by GitHub Actions from now on, not earlier ones.
+
 ## Inputs
 
 [`tools/build_inputs.json`](../tools/build_inputs.json) pins what the build

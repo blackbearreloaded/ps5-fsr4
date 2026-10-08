@@ -81,6 +81,9 @@ class Showcase(unittest.TestCase):
         self.assertIn("PR_HEAD: ${{ github.event.pull_request.head.sha }}", workflow)
         # A contributor's code is never built with write access or secrets.
         self.assertNotIn("pull_request_target", workflow)
+        # The release files are signed (build provenance) by a pinned action, never for a pull request.
+        self.assertIn("uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2", workflow)
+        self.assertIn("- name: Attest the release files\n        if: github.event_name != 'pull_request' && ", workflow)
 
     def test_scenarios_are_the_readme_performance_table(self):
         text = source()

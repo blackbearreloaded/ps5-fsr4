@@ -35,6 +35,11 @@ jobs:
     # the same glslang and SPIRV-Tools releases, and the payload SDK uses LLVM 21.
     container: ubuntu:26.04
     timeout-minutes: 240
+    # id-token and attestations are for the "Attest the release files" step only.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     env:
       VERSION: ${{ github.event.inputs.version || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '0.0.0-dev' }}
     steps:
@@ -117,6 +122,18 @@ jobs:
               assert not wrong, f"entries not stored as 0777: {wrong[:3]}"
               print(f"{archive}: {len(names)} entries, all 0777")
           PY
+
+      # Signed provenance: these files were built by this workflow from this commit. Anyone can check
+      # a downloaded copy with `gh attestation verify <file> -R <owner>/<repo>`. Not for pull requests
+      # (a fork's run cannot sign), and not in a private repository (the plan does not include it).
+      - name: Attest the release files
+        if: github.event_name != 'pull_request' && !github.event.repository.private && (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            build/release/ps5-fsr4-showcase-${{ env.VERSION }}-PPSA99011.zip
+            build/release/ps5-fsr4-sdk-${{ env.VERSION }}.zip
+            build/release/ps5-fsr4-${{ env.VERSION }}-source.tar.gz
 
       - name: Keep the showcase ZIP
         uses: actions/upload-artifact@v7
