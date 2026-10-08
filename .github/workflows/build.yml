@@ -10,8 +10,8 @@
 name: Build
 
 on:
+  # A build on main is started by hand (Run workflow): pushes to main build nothing.
   push:
-    branches: [main]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
