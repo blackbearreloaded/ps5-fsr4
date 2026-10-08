@@ -48,8 +48,8 @@ This project is independent of the upstream driver project.
   at dusk and upscales it at 60 fps. Its settings choose every quality mode at
   1080p, 1440p and 4K output, with split views against bilinear and native
   rendering, a paired magnifier and a benchmark of the upscaler.
-- GitHub Actions builds and tests everything from pinned public inputs on every
-  push; a `v*` tag publishes a
+- GitHub Actions builds and tests everything from pinned public inputs for every
+  pull request and, on `main`, when started by hand; a `v*` tag publishes a
   [pre-release](https://github.com/blackbearreloaded/ps5-fsr4/releases) with
   the showcase app, the SDK and their source ([releasing](docs/RELEASING.md)).
 - `tools/build_fsr4_sdk.py` stages the SDK: `libps5_fsr4.a`, its header,

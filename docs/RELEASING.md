@@ -1,10 +1,12 @@
 # Releasing
 
 GitHub Actions builds everything from pinned public inputs
-([`.github/workflows/build.yml`](../.github/workflows/build.yml)). Every push to
-`main` and every pull request builds the driver, the FSR4 runtime, the SDK, the
+([`.github/workflows/build.yml`](../.github/workflows/build.yml)). Every pull
+request and every `v*` tag builds the driver, the FSR4 runtime, the SDK, the
 demo and the showcase, checks the pipeline cache, runs the host tests and
 packages a release. A `v*` tag publishes that package as a GitHub pre-release.
+A push to `main` builds nothing: a build on `main` is started by hand
+(Actions → Build → Run workflow, or `gh workflow run build.yml --ref main`).
 Every run keeps the showcase app ZIP as a workflow artifact; a pull request's is
 named by its number and commit ([pull-request builds](PULL_REQUEST_BUILDS.md)).
 

@@ -7,7 +7,7 @@ gets. The result is an installable copy of the [showcase app](../examples/fsr4_s
 
 ## What a pull request produces
 
-| | Pull request | Push to `main`, tag, manual run |
+| | Pull request | Tag, manual run |
 | --- | --- | --- |
 | Artifact name | `ps5-fsr4-PR<number>-<commit>` | `ps5-fsr4-showcase-<commit>` |
 | `<commit>` | First seven characters of the pull request's own head commit | The full commit that was built |
