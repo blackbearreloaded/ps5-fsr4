@@ -132,10 +132,13 @@ def host_build(out, runtime, defines):
 
 def release(out, version):
     """The package as ps5-fsr4-showcase-VERSION-PPSA99011.zip, with a README, notices/ and
-    SHA256SUMS inside (tools/package_fsr4_release.py), and the zip's own SHA-256 beside it."""
+    SHA256SUMS inside (tools/package_fsr4_release.py), and the zip's own SHA-256 beside it.
+    Every entry is stored open to all (tools/zip_open_modes.py), as the console wants an app's files."""
     import package_fsr4_release
+    import zip_open_modes
     name = f"ps5-fsr4-showcase-{version}-{TITLE_ID}.zip"
     archive = package_fsr4_release.showcase_zip(out / TITLE_ID, out / name, version)
+    zip_open_modes.open_modes(archive)
     with zipfile.ZipFile(archive) as z:
         names = set(z.namelist())
         for required in (*(f"{TITLE_ID}/{f}" for f in ("eboot.bin", "sce_module/libc.prx", "sce_sys/param.json",

@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Builds the driver, the FSR4 runtime, the SDK, the demo and the showcase from
-# pinned public inputs, runs the host tests and packages a release. A v* tag
-# publishes that package as a GitHub pre-release; a manual run with a version
-# keeps it as a workflow artifact. docs/RELEASING.md has the procedure.
+# pinned public inputs, runs the host tests and packages a release. Every run
+# keeps the showcase app ZIP as a workflow artifact. A v* tag publishes the
+# package as a GitHub pre-release; a manual run with a version keeps all of it
+# as a workflow artifact. docs/RELEASING.md has the procedure.
 name: Build
 
 on:
@@ -81,6 +82,31 @@ jobs:
 
       - name: Package
         run: python3 tools/package_fsr4_release.py --version "$VERSION"
+
+      # The console only starts an app whose files are open to all, and some
+      # tools keep a ZIP's permissions when they unpack it.
+      - name: Check the showcase ZIP
+        run: |
+          python3 - "build/release/ps5-fsr4-showcase-$VERSION-PPSA99011.zip" PPSA99011 <<'PY'
+          import sys, zipfile
+          archive, title = sys.argv[1:3]
+          with zipfile.ZipFile(archive) as z:
+              assert z.testzip() is None, "damaged entry"
+              names = z.namelist()
+              assert title + "/eboot.bin" in names, "no eboot.bin"
+              wrong = [i.filename for i in z.infolist() if (i.external_attr >> 16) & 0o777 != 0o777]
+              assert not wrong, f"entries not stored as 0777: {wrong[:3]}"
+              print(f"{archive}: {len(names)} entries, all 0777")
+          PY
+
+      - name: Keep the showcase ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          name: ps5-fsr4-showcase-${{ github.sha }}
+          path: build/release/ps5-fsr4-showcase-${{ env.VERSION }}-PPSA99011.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
       - name: Keep the package
         if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
