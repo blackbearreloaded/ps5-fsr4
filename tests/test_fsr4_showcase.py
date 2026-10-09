@@ -85,6 +85,24 @@ class Showcase(unittest.TestCase):
         self.assertIn("uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2", workflow)
         self.assertIn("- name: Attest the release files\n        if: github.event_name != 'pull_request' && ", workflow)
 
+    def test_release_never_replaces_or_removes_a_file(self):
+        workflow = (ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8")
+        self.assertNotIn("--clobber", workflow)
+        self.assertNotIn("delete-asset", workflow)
+        self.assertNotIn("release delete", workflow)
+        self.assertNotIn("release edit", workflow)
+        publish = workflow[workflow.index("- name: Publish the pre-release"):]
+        # No release for the tag: created as before. One exists: missing files only, with a warning for the rest.
+        self.assertIn(
+            'gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \\\n'
+            '              --title "PS5 FSR4 ${GITHUB_REF_NAME#v}" --notes-file release-notes.md \\\n'
+            "              *.zip *.tar.gz SHA256SUMS\n",
+            publish,
+        )
+        self.assertIn("--json assets --jq '.assets[].name'", publish)
+        self.assertIn('gh release upload "$TAG" "$file" --repo "$GITHUB_REPOSITORY"\n', publish)
+        self.assertIn("::warning title=Release file not from this run::A release for $TAG already has $1;", publish)
+
     def test_scenarios_are_the_readme_performance_table(self):
         text = source()
         table = text[text.index("} SCENARIOS[] = {"):text.index("enum { SCENARIO_COUNT")]

@@ -30,6 +30,13 @@ The two ZIPs and the source tarball built by the workflow can be checked with
 `gh attestation verify <file> -R blackbearreloaded/ps5-fsr4` (GitHub CLI); this
 covers releases built by GitHub Actions from now on, not earlier ones.
 
+A release's files are the ones the workflow run for its tag built and attested;
+none is attached by hand. If a release for the tag already exists (notes
+written ahead, or a draft), the run adds the files it does not have yet and
+leaves its title and notes as they are. A file the release already has is never
+replaced or removed: the run prints a warning that it did not come from this
+run and may have no attestation, and ends green.
+
 ## Inputs
 
 [`tools/build_inputs.json`](../tools/build_inputs.json) pins what the build
@@ -79,7 +86,8 @@ for more than a minute instead of about 0.1 s. To make a new one:
    which is also what the console reports for the installed showcase:
    `git tag v01.000.000 && git push origin v01.000.000`.
 3. The workflow builds, tests and packages the tag, then publishes the
-   pre-release with the notes `tools/package_fsr4_release.py` writes.
+   pre-release with the notes `tools/package_fsr4_release.py` writes (or adds
+   its files to the release already written for that tag).
 
 To try the packaging without publishing, run the workflow by hand
 (Actions → Build → Run workflow) with a version: the assets are kept as a

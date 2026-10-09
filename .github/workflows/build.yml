@@ -170,6 +170,31 @@ jobs:
         run: |
           cd release
           sha256sum --check SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
-            --title "PS5 FSR4 ${GITHUB_REF_NAME#v}" --notes-file release-notes.md \
-            *.zip *.tar.gz SHA256SUMS
+          TAG=$GITHUB_REF_NAME
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+              --title "PS5 FSR4 ${GITHUB_REF_NAME#v}" --notes-file release-notes.md \
+              *.zip *.tar.gz SHA256SUMS
+            exit 0
+          fi
+          # The release exists (notes written ahead, or a draft): its title and notes stay, and
+          # a file it already has is never replaced or removed. Only missing files are added.
+          existing=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          has() { grep -Fxq -- "$1" <<< "$existing"; }
+          kept() { echo "::warning title=Release file not from this run::A release for $TAG already has $1; it was not replaced. It was not published by this run and may have no attestation."; }
+          all_from_this_run=true
+          for file in *.zip *.tar.gz; do
+            if has "$file"; then
+              kept "$file"
+              all_from_this_run=false
+            else
+              gh release upload "$TAG" "$file" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+          if has SHA256SUMS; then
+            kept SHA256SUMS
+          elif [[ $all_from_this_run == true ]]; then
+            gh release upload "$TAG" SHA256SUMS --repo "$GITHUB_REPOSITORY"
+          else
+            echo "SHA256SUMS not uploaded: it lists this run's files, and the release keeps another one."
+          fi
