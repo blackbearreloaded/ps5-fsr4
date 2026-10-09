@@ -54,9 +54,12 @@ into `build/`:
 
 `eval "$(python3 tools/fetch_build_inputs.py --env)"` then points the builds at
 them. The driver pins its own dependencies (`make driver-deps`). The workflow
-runs in an Ubuntu 26.04 container: the cache is only valid for SPIR-V that is
+runs on an Ubuntu 24.04 runner. The cache is only valid for SPIR-V that is
 byte-identical to what it was made from, which needs the same glslang and
-SPIRV-Tools releases.
+SPIRV-Tools releases: the script builds those (glslang 16.2.0, SPIRV-Tools
+v2026.1) into `build/inputs/shader-tools` and puts them first on `PATH`, unless
+the system's are those releases already. LLVM 21, which the payload SDK builds
+with, comes from [apt.llvm.org](https://apt.llvm.org).
 
 ## The pipeline cache
 

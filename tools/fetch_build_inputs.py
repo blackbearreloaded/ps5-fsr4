@@ -11,12 +11,14 @@ Everything lands in the ignored build tree, where the other tools look for it:
 - dxc and libdxcompiler.so from Microsoft's DXC release;
 - the BC250 RC11 amd_fidelityfx_upscaler_dx12.dll and its notices, from BC250's
   release (the DLL must match tools/fsr4_dll_map.json);
+- glslang and SPIRV-Tools at the releases the pipeline cache was made with, built
+  from source unless the system's are those releases already;
 - the pipeline cache a PS5 saved for these pass tables and this driver, from this
   repository's build-inputs release.
 
 --env prints the variables the builds read (PS5VK_LAB_ROOT, PS5_PAYLOAD_SDK,
-PS5_NATIVE_APP_TEMPLATE, DXIL_SPIRV_DIR); --github-env appends them to
-$GITHUB_ENV. --check-cache, run after make runtime, verifies that the pinned cache
+PS5_NATIVE_APP_TEMPLATE, DXIL_SPIRV_DIR, and PATH when the shader tools were
+built here); --github-env appends them to $GITHUB_ENV and $GITHUB_PATH. --check-cache, run after make runtime, verifies that the pinned cache
 belongs to this driver's cache identity and to the pass tables just generated.
 """
 import argparse
@@ -144,6 +146,52 @@ def build_template(path):
         raise SystemExit("the native app template build did not produce " + ", ".join(missing))
 
 
+SHADER_TOOLS = ("glslangValidator", "spirv-as", "spirv-dis", "spirv-link", "spirv-opt", "spirv-val")
+
+
+def shader_tool_releases(directory=None):
+    """(glslang release, SPIRV-Tools release) of the tools in directory, or of those on PATH."""
+    def said(name):
+        tool = shutil.which(name, path=str(directory) if directory else None)
+        return subprocess.run([tool, "--version"], capture_output=True, text=True).stdout if tool else ""
+    if not all(shutil.which(name, path=str(directory) if directory else None) for name in SHADER_TOOLS):
+        return None, None
+    glslang = re.search(r"Glslang Version: \d+:(\S+)", said("glslangValidator"))
+    spirv = re.search(r"SPIRV-Tools (v[\w.]+)", said("spirv-val"))
+    return glslang and glslang.group(1), spirv and spirv.group(1)
+
+
+def shader_tools(pin, build=False):
+    """The folder to put first on PATH for the pinned glslang and SPIRV-Tools; None when the
+    system's are those releases. The pipeline cache only fits SPIR-V that is byte-identical to
+    what it was saved for, and another release of either tool writes different SPIR-V."""
+    wanted = (pin["glslang"]["version"], pin["spirv_tools"]["version"])
+    prefix = ROOT / pin["path"]
+    if shader_tool_releases(prefix / "bin") == wanted:
+        return prefix / "bin"
+    if shader_tool_releases() == wanted:
+        return None
+    if not build:
+        return prefix / "bin"
+    print(f"building glslang {wanted[0]} and SPIRV-Tools {wanted[1]}", flush=True)
+    source = Path(pin["path"]) / "src"
+    checkout(pin["glslang"]["repository"], pin["glslang"]["commit"], source)
+    # where glslang's own update_glslang_sources.py puts them, at the commits its known_good.json names
+    checkout(pin["spirv_tools"]["repository"], pin["spirv_tools"]["commit"], source / "External/spirv-tools")
+    checkout(pin["spirv_headers"]["repository"], pin["spirv_headers"]["commit"],
+             source / "External/spirv-tools/external/spirv-headers")
+    work = prefix / "work"
+    subprocess.run(["cmake", "-S", str(ROOT / source), "-B", str(work), "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
+                    f"-DCMAKE_INSTALL_PREFIX={prefix}", "-DBUILD_SHARED_LIBS=OFF", "-DENABLE_OPT=ON",
+                    "-DGLSLANG_TESTS=OFF", "-DSPIRV_SKIP_TESTS=ON", "-DSPIRV_WERROR=OFF"], check=True)
+    subprocess.run(["cmake", "--build", str(work), "--target", "install"], check=True)
+    if shader_tool_releases(prefix / "bin") != wanted:
+        raise SystemExit(f"the build in {prefix} did not produce glslang {wanted[0]} and SPIRV-Tools {wanted[1]}")
+    shutil.rmtree(work)
+    shutil.rmtree(ROOT / source)
+    return prefix / "bin"
+
+
 def environment(pins):
     """The template sits in a lab layout (lab/third_party/...), where the driver's SDK builder looks."""
     template = ROOT / pins["app_template"]["path"]
@@ -249,6 +297,8 @@ def fetch(pins, only):
         expected = json.loads(DLL_MAP.read_text())["dll_sha256"]
         if sha256(dll) != expected:
             raise SystemExit(f"{dll} is not the DLL tools/fsr4_dll_map.json pins ({expected})")
+    if wanted("shader_tools"):
+        shader_tools(pins["shader_tools"], build=True)
     if wanted("pipeline_cache"):
         pin = pins["pipeline_cache"]
         cache = ROOT / pin["path"]
@@ -260,7 +310,7 @@ def fetch(pins, only):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--only", action="append", default=[],
-                        choices=("app_template", "dxil_spirv", "dxc", "bc250_dll", "pipeline_cache"),
+                        choices=("app_template", "dxil_spirv", "dxc", "bc250_dll", "shader_tools", "pipeline_cache"),
                         help="fetch only these inputs (repeatable)")
     parser.add_argument("--env", action="store_true", help="print the build variables and exit")
     parser.add_argument("--github-env", action="store_true", help="also append the build variables to $GITHUB_ENV")
@@ -271,8 +321,14 @@ def main():
     args = parser.parse_args()
     pins = json.loads(PINS.read_text())
     variables = environment(pins)
+
+    def exports():
+        tools = shader_tools(pins["shader_tools"])
+        return "\n".join([f"export {k}={v}" for k, v in variables.items()]
+                         + ([f"export PATH={tools}:$PATH"] if tools else []))
+
     if args.env:
-        print("\n".join(f"export {k}={v}" for k, v in variables.items()))
+        print(exports())
         return
     if args.pin_cache:
         upload = pin_cache(args.pin_cache, pins)
@@ -292,7 +348,11 @@ def main():
     if args.github_env:
         with open(os.environ["GITHUB_ENV"], "a") as f:
             f.writelines(f"{k}={v}\n" for k, v in variables.items())
-    print("\n".join(f"export {k}={v}" for k, v in variables.items()))
+        tools = shader_tools(pins["shader_tools"])
+        if tools:
+            with open(os.environ["GITHUB_PATH"], "a") as f:
+                f.write(f"{tools}\n")
+    print(exports())
 
 
 if __name__ == "__main__":

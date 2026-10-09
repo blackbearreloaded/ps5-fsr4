@@ -12,7 +12,7 @@ the builds at them. GitHub Actions builds the same way
   `spirv-link` from SPIRV-Tools (the pass tables link the generated postpass
   head into the converted postpass); Mako and PyYAML for the driver's shader
   compiler; `glslangValidator`, Pillow and DejaVu Sans (`fonts-dejavu-core`) for
-  the demo and the showcase. The workflow's install step lists the Ubuntu 26.04
+  the demo and the showcase. The workflow's install step lists the Ubuntu 24.04
   packages.
 - The payload SDK and native app template the driver's SDK builder uses: set
   `PS5_PAYLOAD_SDK` and `PS5_NATIVE_APP_TEMPLATE` as described in
