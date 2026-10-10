@@ -181,9 +181,12 @@ def shader_tools(pin, build=False):
     checkout(pin["spirv_headers"]["repository"], pin["spirv_headers"]["commit"],
              source / "External/spirv-tools/external/spirv-headers")
     work = prefix / "work"
+    # USE_CCACHE=1 compiles through ccache, as it does for make.
+    ccache = (["-DCMAKE_C_COMPILER_LAUNCHER=ccache", "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"]
+              if os.environ.get("USE_CCACHE") == "1" else [])
     subprocess.run(["cmake", "-S", str(ROOT / source), "-B", str(work), "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
                     f"-DCMAKE_INSTALL_PREFIX={prefix}", "-DBUILD_SHARED_LIBS=OFF", "-DENABLE_OPT=ON",
-                    "-DGLSLANG_TESTS=OFF", "-DSPIRV_SKIP_TESTS=ON", "-DSPIRV_WERROR=OFF"], check=True)
+                    "-DGLSLANG_TESTS=OFF", "-DSPIRV_SKIP_TESTS=ON", "-DSPIRV_WERROR=OFF", *ccache], check=True)
     subprocess.run(["cmake", "--build", str(work), "--target", "install"], check=True)
     if shader_tool_releases(prefix / "bin") != wanted:
         raise SystemExit(f"the build in {prefix} did not produce glslang {wanted[0]} and SPIRV-Tools {wanted[1]}")
