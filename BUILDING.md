@@ -43,6 +43,10 @@ make check    # host tests
 submodule in a git checkout, otherwise a clone of `DRIVER_URL` at that
 revision (or its default branch when the revision is unknown).
 
+With `USE_CCACHE=1` in the environment, the two PSBC builds, dxil-spirv and the
+shader tools that `make inputs` builds compile through ccache. GitHub Actions
+builds that way and keeps the cache between runs.
+
 `make driver-sdk` stages the driver SDK with the profile FSR4 needs:
 `PS5VK_SHADER_INT8_DIAGNOSTIC`, `PS5VK_SHADER_INT16_DIAGNOSTIC`,
 `PS5VK_SUBGROUP_ALL_DIAGNOSTIC` and `PS5VK_EXTENDED_COMPUTE_DIAGNOSTIC`. The FSR4

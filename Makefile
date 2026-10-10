@@ -14,6 +14,15 @@ DXIL_SPIRV_DIR ?= ../references/dxil-spirv
 DRIVER_PROFILE = PS5VK_SHADER_INT8_DIAGNOSTIC=1 PS5VK_SHADER_INT16_DIAGNOSTIC=1 \
 	PS5VK_SUBGROUP_ALL_DIAGNOSTIC=1 PS5VK_EXTENDED_COMPUTE_DIAGNOSTIC=1
 VULKAN_CFLAGS = -I$(DRIVER)/third_party/vulkan-headers/include
+# USE_CCACHE=1 compiles through ccache. The driver's PSBC makefiles name their compilers
+# themselves, so the two PSBC builds get theirs as command-line variables, which a nested
+# make reads from MAKEFLAGS (the PS5 one leaves PS5_PAYLOAD_SDK for that make to resolve);
+# the CMake builds take a compiler launcher.
+ifeq ($(USE_CCACHE),1)
+PSBC_PS5_CCACHE = MAKEFLAGS="$$MAKEFLAGS "'CC=ccache\ $$$$(PS5_PAYLOAD_SDK)/bin/prospero-clang CXX=ccache\ $$$$(PS5_PAYLOAD_SDK)/bin/prospero-clang++'
+PSBC_HOST_CCACHE = MAKEFLAGS="$$MAKEFLAGS "'CC=ccache\ $(CC) CXX=ccache\ $(CXX)'
+CMAKE_CCACHE = -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+endif
 
 .PHONY: all driver driver-source driver-headers driver-deps driver-psbc driver-sdk fsr4-dxil-converter runtime sdk demo showcase inputs release check
 all: sdk
@@ -37,17 +46,18 @@ driver: driver-deps driver-psbc driver-sdk
 driver-deps: | $(DRIVER)/Makefile
 	$(MAKE) -C $(DRIVER) vulkan-headers native-deps compiler-deps
 driver-psbc: | $(DRIVER)/Makefile
-	cd $(DRIVER) && $(PYTHON) tools/build_psbc.py --target ps5 && $(PYTHON) tools/build_psbc.py --host
+	cd $(DRIVER) && $(PSBC_PS5_CCACHE) $(PYTHON) tools/build_psbc.py --target ps5 && \
+		$(PSBC_HOST_CCACHE) $(PYTHON) tools/build_psbc.py --host
 driver-sdk: | $(DRIVER)/Makefile
 	cd $(DRIVER) && $(DRIVER_PROFILE) $(PYTHON) tools/build_sdk.py
 $(DRIVER)/build/libpsbc.host.a: | $(DRIVER)/Makefile
-	cd $(DRIVER) && $(PYTHON) tools/build_psbc.py --host
+	cd $(DRIVER) && $(PSBC_HOST_CCACHE) $(PYTHON) tools/build_psbc.py --host
 
 # Offline converter for the exact captured shaders. This dependency is host-only.
 fsr4-dxil-converter:
 	test "$$(git -C "$(DXIL_SPIRV_DIR)" rev-parse HEAD)" = f2d1b5541eac934e9c32e8aa664328915336a213
 	$(PYTHON) tools/prepare_fsr4_converter.py "$(DXIL_SPIRV_DIR)"
-	cmake -S "$(DXIL_SPIRV_DIR)" -B build/dxil-spirv -G Ninja -DCMAKE_BUILD_TYPE=Release -DSPIRV_SKIP_TESTS=ON -DCMAKE_CXX_FLAGS=-DPS5_FSR4_REFERENCE_FP16=1
+	cmake -S "$(DXIL_SPIRV_DIR)" -B build/dxil-spirv -G Ninja -DCMAKE_BUILD_TYPE=Release -DSPIRV_SKIP_TESTS=ON -DCMAKE_CXX_FLAGS=-DPS5_FSR4_REFERENCE_FP16=1 $(CMAKE_CCACHE)
 	cmake --build build/dxil-spirv --target dxil-spirv-c-shared -j 4
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -I"$(DXIL_SPIRV_DIR)" \
 		tools/fsr4_dxil_to_spirv.c -Lbuild/dxil-spirv -ldxil-spirv-c-shared \

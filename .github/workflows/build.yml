@@ -20,6 +20,10 @@ on:
         description: Version to package as an artifact (nothing is published)
         required: true
         default: 0.0.0-test
+      snapshot:
+        description: "Also publish this run's compiler cache as the build-cache snapshot (run it on main)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -39,6 +43,12 @@ jobs:
       attestations: write
     env:
       VERSION: ${{ github.event.inputs.version || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '0.0.0-dev' }}
+      # The builds compile through ccache (BUILDING.md). A compiler is known by what it
+      # says its version is: the payload SDK's are wrapper scripts around LLVM 21.
+      USE_CCACHE: 1
+      CCACHE_DIR: ${{ github.workspace }}/build/ccache
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPILERCHECK: "%compiler% --version"
     steps:
       # The payload SDK builds with LLVM 21, which Ubuntu 24.04 does not carry: it comes
       # from LLVM's own package repository. glslang and SPIRV-Tools are not installed
@@ -52,7 +62,7 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             bsdextrautils build-essential ca-certificates cmake curl file git make \
-            ninja-build pkg-config python3 python3-mako python3-numpy python3-pil python3-yaml \
+            ninja-build ccache pkg-config python3 python3-mako python3-numpy python3-pil python3-yaml \
             tar unzip wget xxd xz-utils zlib1g-dev fonts-dejavu-core \
             clang-18 lld-18 llvm-18 clang-21 lld-21 llvm-21
 
@@ -66,6 +76,30 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Packaging version $VERSION"
 
+      - name: Restore compiler cache
+        uses: actions/cache@v6
+        with:
+          path: build/ccache
+          key: ccache-ubuntu-24.04-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-ubuntu-24.04-
+
+      # GitHub drops a cache nobody used for a week, and a pull request only sees main's. When
+      # nothing was restored, start from the snapshot kept as a file of the build-cache release;
+      # a manual run with "snapshot" ticked replaces that file.
+      - name: Fetch the compiler cache snapshot
+        run: |
+          if [ -z "$(ls -A "$CCACHE_DIR" 2>/dev/null)" ]; then
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/build-cache/ccache-ubuntu-24.04.tar"
+            if curl -fsSL --retry 3 -o "$RUNNER_TEMP/ccache-ubuntu-24.04.tar" "$url"; then
+              mkdir -p "$CCACHE_DIR"
+              tar -xf "$RUNNER_TEMP/ccache-ubuntu-24.04.tar" -C "$CCACHE_DIR"
+              rm "$RUNNER_TEMP/ccache-ubuntu-24.04.tar"
+              echo "::notice title=Compiler cache::Started from the build-cache snapshot."
+            fi
+          fi
+          ccache --zero-stats
+
       - name: Cache pinned inputs
         uses: actions/cache@v6
         with:
@@ -74,6 +108,11 @@ jobs:
 
       - name: Fetch pinned inputs
         run: python3 tools/fetch_build_inputs.py --github-env
+
+      # ccache does not see the flags the payload SDK's compiler wrappers add, so a change
+      # in either wrapper has to miss.
+      - name: Tie the compiler cache to the payload SDK
+        run: echo "CCACHE_EXTRAFILES=$PS5_PAYLOAD_SDK/bin/prospero-clang:$PS5_PAYLOAD_SDK/bin/prospero-clang++" >> "$GITHUB_ENV"
 
       - name: Build the driver, the FSR4 runtime and the SDK
         run: make sdk
@@ -106,6 +145,24 @@ jobs:
         run: |
           make demo
           make showcase SHOWCASE_ARGS="--release $VERSION"
+
+      - name: Report compiler cache statistics
+        if: always()
+        run: ccache --show-stats
+
+      # ccache compresses what it stores, so the snapshot is a plain tar.
+      - name: Pack the compiler cache snapshot
+        if: github.event_name == 'workflow_dispatch' && inputs.snapshot
+        run: tar -cf "$RUNNER_TEMP/ccache-ubuntu-24.04.tar" -C "$CCACHE_DIR" .
+
+      - name: Upload the compiler cache snapshot
+        if: github.event_name == 'workflow_dispatch' && inputs.snapshot
+        uses: actions/upload-artifact@v7
+        with:
+          name: ccache-snapshot
+          path: ${{ runner.temp }}/ccache-ubuntu-24.04.tar
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Package
         run: python3 tools/package_fsr4_release.py --version "$VERSION"
